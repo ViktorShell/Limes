@@ -1,7 +1,0 @@
-[package]
-name = "limes"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-wasm_runner = { path = "../wasm_runner" }

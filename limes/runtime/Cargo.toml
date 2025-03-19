@@ -1,0 +1,12 @@
+[package]
+name = "runtime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+json = "0.12.4"
+phf = "0.11.3"
+serde = "1.0.219"
+uuid = "1.15.1"
+wasmtime = "30.0.2"
+wasmtime-wasi = "30.0.2"

@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-  "wasm_runner",
-  "limes"
+  "runtime"
+]
+exclude = [
+  "resources/rust_module/wrapper-rust"
 ]
