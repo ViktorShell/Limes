@@ -4,9 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.97"
+async-trait = "0.1.88"
 json = "0.12.4"
 phf = "0.11.3"
 serde = "1.0.219"
+thiserror = "2.0.12"
+tokio = { version = "1.44.1", features = ["full"] }
 uuid = "1.15.1"
 wasmtime = "30.0.2"
 wasmtime-wasi = "30.0.2"
