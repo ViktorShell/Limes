@@ -11,7 +11,6 @@ struct Runtime {
     ready_modules: Map<Uuid, String>,
     running_modules: Map<Uuid, String>,
 }
-
 #[allow(dead_code)]
 impl Runtime {
     pub fn new() {
@@ -43,7 +42,7 @@ impl Runtime {
     }
 }
 
-impl Default for LimesRuntime {
+impl Default for Runtime {
     fn default() -> Self {
         todo!();
     }
