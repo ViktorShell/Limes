@@ -1,7 +1,10 @@
 use super::lambda_error::LambdaError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::*;
+use wasmtime_wasi::bindings::Command;
+use wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
 #[derive(Clone)]
 pub enum LambdaStatus {
@@ -9,58 +12,104 @@ pub enum LambdaStatus {
     Ready,
 }
 
+pub struct LambdaState {
+    wasi_ctx: WasiCtx,
+    resource_table: ResourceTable,
+    limiter: StoreLimits,
+}
+
 #[derive(Debug)]
 pub struct LambdaRust {
     store: Store<StoreLimits>,
     instance: Instance,
-    terminate: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
 }
 
 impl LambdaRust {
+    // pub async fn new(
+    //     engine: Arc<Engine>,
+    //     module: Arc<Module>,
+    //     memory_size: usize, // Pagine da 64Kbyte, minimo 2Mb -> 1024 * 1024 * 2
+    // ) -> Result<(Self, impl Fn() -> Result<(), LambdaError>), LambdaError> {
+    //     // Store with memory size
+    //     let store_limits = StoreLimitsBuilder::new().memory_size(memory_size).build();
+    //     let mut store: Store<StoreLimits> = Store::new(&engine, store_limits);
+    //     store.limiter(|limit| limit);
+    //
+    //     // Epoch, a way to yield the current running code & block it if needed
+    //     let terminate = Arc::new(AtomicBool::new(false));
+    //     let terminate_clone = Arc::clone(&terminate);
+    //     store.epoch_deadline_callback(move |_store| {
+    //         if !terminate_clone.load(Ordering::Relaxed) {
+    //             Ok(UpdateDeadline::Yield(1))
+    //         } else {
+    //             return Err(LambdaError::ForceStop.into());
+    //         }
+    //     });
+    //
+    //     let instance = Instance::new_async(&mut store, &module, &[])
+    //         .await
+    //         .map_err(|_| LambdaError::InstanceBuilderError)?;
+    //
+    //     let terminate_ref = Arc::clone(&terminate);
+    //     let engine_ref = Arc::clone(&engine);
+    //     let stop_function = move || {
+    //         if terminate_ref.load(Ordering::Relaxed) {
+    //             return Err(LambdaError::FunctionNotRunning);
+    //         }
+    //         terminate_ref.store(true, Ordering::Relaxed);
+    //         engine_ref.increment_epoch();
+    //         Ok(())
+    //     };
+    //
+    //     Ok((
+    //         LambdaRust {
+    //             store,
+    //             instance,
+    //             terminate,
+    //         },
+    //         stop_function,
+    //     ))
+    // }
+
     pub async fn new(
         engine: Arc<Engine>,
         module: Arc<Module>,
         memory_size: usize, // Pagine da 64Kbyte, minimo 2Mb -> 1024 * 1024 * 2
     ) -> Result<(Self, impl Fn() -> Result<(), LambdaError>), LambdaError> {
-        // Store with memory size
-        let store_limits = StoreLimitsBuilder::new().memory_size(memory_size).build();
-        let mut store: Store<StoreLimits> = Store::new(&engine, store_limits);
-        store.limiter(|limit| limit);
+        // Init engine, linker and async component for wasi support
+        let engine = *Arc::clone(&engine);
+        let mut linker = Linker::new(&engine);
+        wasmtime_wasi::add_to_linker_async(&mut linker);
 
-        // Epoch, a way to yield the current running code & block it if needed
-        let terminate = Arc::new(AtomicBool::new(false));
-        let terminate_clone = Arc::clone(&terminate);
+        // Wasi & StoreLimits
+        let wasi = WasiCtxBuilder::new().inherit_stdio().build();
+        let resource = ResourceTable::new();
+        let store_limits = StoreLimitsBuilder::new().memory_size(memory_size).build();
+
+        // State usend in Store<T> T = LambdaState
+        let mut state = LambdaState {
+            wasi_ctx: wasi,
+            resource_table: resource,
+            limiter: store_limits,
+        };
+
+        // Init store with memory limits
+        let mut store: Store<LambdaState> = Store::new(&engine, state);
+        store.limiter(|state| &mut state.limiter);
+
+        // Interrupt mechanism
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_clone = Arc::clone(&stop);
         store.epoch_deadline_callback(move |_store| {
-            if !terminate_clone.load(Ordering::Relaxed) {
+            if !stop_clone.load(Ordering::Relaxed) {
                 Ok(UpdateDeadline::Yield(1))
             } else {
                 return Err(LambdaError::ForceStop.into());
             }
         });
 
-        let instance = Instance::new_async(&mut store, &module, &[])
-            .await
-            .map_err(|_| LambdaError::InstanceBuilderError)?;
-
-        let terminate_ref = Arc::clone(&terminate);
-        let engine_ref = Arc::clone(&engine);
-        let stop_function = move || {
-            if terminate_ref.load(Ordering::Relaxed) {
-                return Err(LambdaError::FunctionNotRunning);
-            }
-            terminate_ref.store(true, Ordering::Relaxed);
-            engine_ref.increment_epoch();
-            Ok(())
-        };
-
-        Ok((
-            LambdaRust {
-                store,
-                instance,
-                terminate,
-            },
-            stop_function,
-        ))
+        // Get the Component
     }
 
     // togliere il riferimento e restituire una stringa owned
