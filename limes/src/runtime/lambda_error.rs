@@ -20,6 +20,8 @@ pub enum LambdaError {
     ArgsOutOfMemory,
     #[error("The module is not running")]
     FunctionNotRunning,
+    #[error("Wasi was not able add async capabilities to the linker")]
+    WasiAsyncLinkerError,
 }
 
 //impl fmt::Display for LambdaError {
