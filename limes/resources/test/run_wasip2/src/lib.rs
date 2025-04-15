@@ -1,19 +1,7 @@
-# Limes
-Distributed WebAssembly system for urgent edge cloud computing
-
-## Component
-cargo new --lib
-add to Cargo.toml
-```toml
-[lib]
-crate-type = ["cdylib"]
-```
-cargo add wit-bindgen
-**In the Code**
-```rust
 wit_bindgen::generate!({
     inline: r"
         package component:run;
+
         interface run {
             run: func(args: string) -> string;
         }
@@ -40,8 +28,3 @@ impl Guest for Component {
 }
 
 export!(Component);
-```
-cargo build --target wasm32-wasip2 --release
-
-## Host
-

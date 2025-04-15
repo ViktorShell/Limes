@@ -1,6 +1,9 @@
+use std::net::Ipv4Addr;
+use std::net::SocketAddr;
+use std::pin::Pin;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::*;
-use wasmtime_wasi::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
 
 pub struct State {
     pub wasi_ctx: WasiCtx,
@@ -24,7 +27,32 @@ fn main() -> Result<()> {
     let mut linker = Linker::new(&engine);
     let _ = wasmtime_wasi::add_to_linker_sync(&mut linker);
 
-    let wasi = WasiCtxBuilder::new().inherit_stdio().inherit_args().build();
+    let tap_ip = Ipv4Addr::new(127, 0, 0, 1);
+    let check_socket: Box<
+        dyn Fn(SocketAddr, SocketAddrUse) -> Pin<Box<dyn Future<Output = bool> + Send + Sync>>
+            + Send
+            + Sync
+            + 'static,
+    > = Box::new(move |socket, socket_check| {
+        let tap_ip = tap_ip; // catturazione nel move async
+        Box::pin(async move {
+            match socket_check {
+                SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => match socket {
+                    SocketAddr::V4(socket_v4) => {
+                        println!("SOCKET IP: {}", socket_v4.ip().to_string());
+                        socket_v4.ip().eq(&tap_ip)
+                    }
+                    SocketAddr::V6(_) => false,
+                },
+                _ => true,
+            }
+        })
+    });
+
+    let wasi = WasiCtxBuilder::new()
+        .inherit_stdio()
+        .socket_addr_check(check_socket)
+        .build();
     let state = State {
         wasi_ctx: wasi,
         resource_table: ResourceTable::new(),
@@ -32,7 +60,7 @@ fn main() -> Result<()> {
 
     let component = Component::from_file(
         &engine,
-        "/home/viktor/Desktop/wasi-test/wasi-runner/run.wasm",
+        "/home/viktor/Documents/git/tesi/src/limes/limes/resources/test/wasi-runner/run_wasip2.wasm",
     )?;
     let mut store = Store::new(&engine, state);
     let instance = linker.instantiate(&mut store, &component)?;
