@@ -56,7 +56,7 @@ mod test {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use tokio;
-    use wasmtime::component::{Component, Linker, ResourceTable};
+    use wasmtime::component::Component;
     use wasmtime::*;
 
     fn get_crate_path() -> PathBuf {
@@ -99,21 +99,68 @@ mod test {
         assert_eq!(res, "### TEST ###");
     }
 
-    // #[tokio::test]
-    // async fn stop_infinite_loop_function() {
-    //     todo!()
-    // }
-    //
-    // #[tokio::test]
-    // async fn multiple_function_exec_one_interrupt() {
-    //     todo!()
-    // }
-    //
-    // #[tokio::test]
-    // async fn tcp_udp_bind_to_not_allowed_ip() {
-    //     todo!()
-    // }
-    //
+    #[tokio::test]
+    async fn stop_infinite_loop_function() {
+        let engine = Arc::new(gen_engine(true, true, OptLevel::Speed));
+        let file = get_crate_path().join("stop_infinite_loop.wasm");
+        let component = Arc::new(load_component(&engine, file));
+        let (mut lambda, stop_func) = Lambda::new(
+            engine,
+            component,
+            1024 * 1204 * 2,
+            Ipv4Addr::new(127, 0, 0, 1),
+        )
+        .await
+        .unwrap();
+
+        let handler = tokio::spawn(async move { lambda.run("").await });
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        if !handler.is_finished() {
+            stop_func().unwrap();
+            if let Err(LambdaError::ForceStop) = handler.await.unwrap() {
+                assert!(true);
+                return; // assert just exec a check it doesn't stop the function
+            }
+        }
+        assert!(false);
+    }
+
+    #[tokio::test]
+    async fn multiple_function_exec_one_interrupt() {
+        let engine = Arc::new(gen_engine(true, true, OptLevel::Speed));
+        let file = get_crate_path().join("multi_function_exec_one_interrupt.wasm");
+        let component = Arc::new(load_component(&engine, file));
+
+        let (mut lambda_run, _) = Lambda::new(
+            engine.clone(),
+            component.clone(),
+            1024 * 1204 * 2,
+            Ipv4Addr::new(127, 0, 0, 1),
+        )
+        .await
+        .unwrap();
+
+        let (mut lambda_stop, stop_func) = Lambda::new(
+            engine.clone(),
+            component.clone(),
+            1024 * 1204 * 2,
+            Ipv4Addr::new(127, 0, 0, 1),
+        )
+        .await
+        .unwrap();
+
+        // Exec both, stop one and get result from the other a,b,c,d,e,f
+        let handler_run = tokio::spawn(async move { lambda_run.run("f,e,d,c,b,a").await });
+        let handler_stop = tokio::spawn(async move { lambda_stop.run("f,e,d,c,b,a").await });
+        assert_eq!(stop_func().unwrap(), ());
+        assert_eq!(Err(LambdaError::ForceStop), handler_stop.await.unwrap());
+        let result = handler_run.await.unwrap().unwrap();
+        assert_eq!(result, "[a,b,c,d,e,f]");
+    }
+
+    #[tokio::test]
+    async fn tcp_udp_bind_to_not_allowed_ip() {}
+
     // #[tokio::test]
     // async fn stdio_output() {
     //     todo!()

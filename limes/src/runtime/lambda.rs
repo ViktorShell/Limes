@@ -87,7 +87,6 @@ impl Lambda {
             resource_table: resource,
             limiter: store_limits,
         };
-
         // Init store with memory limits
         let mut store: Store<LambdaState> = Store::new(&engine, state);
         store.limiter(|state| &mut state.limiter);
@@ -103,10 +102,9 @@ impl Lambda {
         let stop_clone = Arc::clone(&stop);
         store.epoch_deadline_callback(move |_store| {
             if !stop_clone.load(Ordering::Relaxed) {
-                Ok(UpdateDeadline::Yield(1))
-            } else {
-                return Err(LambdaError::ForceStop.into());
+                return Ok(UpdateDeadline::Yield(1));
             }
+            Err(LambdaError::ForceStop.into())
         });
 
         // Force stop closure
@@ -116,7 +114,7 @@ impl Lambda {
             if stop_ref.load(Ordering::Relaxed) {
                 return Err(LambdaError::FunctionNotRunning);
             }
-            stop_ref.store(false, Ordering::Relaxed);
+            stop_ref.store(true, Ordering::Relaxed);
             engine_ref.increment_epoch();
             Ok(())
         };
@@ -149,22 +147,20 @@ impl Lambda {
             .get_typed_func::<(&str,), (String,)>(&mut store, func_idx)
             .map_err(|_| LambdaError::FunctionRetrievError)?;
 
-        // NOTE: In case of interrupt if is a TRAP it will handle the case otherwise it will be
-        // placed in the Tokio Task Queue to be rescheduled
-        let res = match func.call_async(&mut store, (args,)).await {
-            Ok((res,)) => res,
-            // TODO: Handle general Errors and WASI related
-            Err(_) => {
-                return {
-                    if self.stop.load(Ordering::Relaxed) {
-                        Err(LambdaError::ForceStop)
-                    } else {
-                        Err(LambdaError::FunctionExecError)
-                    }
+        let stop_copy = Arc::clone(&self.stop);
+        let result = func
+            .call_async(&mut store, (args,))
+            .await
+            // TODO: Add wasi error message instead of FunctionExecError
+            .map_err(move |_| {
+                if stop_copy.load(Ordering::Relaxed) {
+                    LambdaError::ForceStop
+                } else {
+                    LambdaError::FunctionExecError
                 }
-            }
-        };
+            })?
+            .0;
 
-        Ok(res)
+        Ok(result)
     }
 }

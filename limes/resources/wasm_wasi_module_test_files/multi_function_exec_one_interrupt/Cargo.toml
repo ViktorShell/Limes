@@ -1,0 +1,10 @@
+[package]
+name = "multi_function_exec_one_interrupt"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.41.0"

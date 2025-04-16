@@ -16,7 +16,7 @@ pub enum LambdaError {
     ModuleNotFound,
     #[error("Wasm instance build error")]
     InstanceBuilderError,
-    #[error("Wasm memory function error")]
+    #[error("Wasm function was forced to stop")]
     ForceStop,
     #[error("Wasm could not build the Engine")]
     EngineBuildError,
