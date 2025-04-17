@@ -21,7 +21,8 @@ impl Guest for Component {
     #[allow(unused)]
     fn run(args: String) -> String {
         #[allow(unused)]
-        let listener = TcpListener::bind("127.0.0.1:50400").unwrap();
+        // let listener = TcpListener::bind("127.0.0.1:50400").unwrap();
+        let listener = TcpListener::bind("192.168.1.2:50400").unwrap();
         println!("ECHO FROM WASM COMPONENT");
         String::from("### TEST WASIp2")
     }

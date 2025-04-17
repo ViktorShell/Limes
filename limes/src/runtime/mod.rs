@@ -159,10 +159,38 @@ mod test {
     }
 
     #[tokio::test]
-    async fn tcp_udp_bind_to_not_allowed_ip() {}
+    async fn tcp_udp_bind_to_not_allowed_ip() {
+        let engine = Arc::new(gen_engine(true, true, OptLevel::Speed));
+        let file = get_crate_path().join("tcp_udp_bind_to_not_allowed_ip.wasm");
+        let component = Arc::new(load_component(&engine, file));
+        let (mut lambda, _) = Lambda::new(
+            engine,
+            component,
+            1024 * 1024 * 2,
+            Ipv4Addr::new(127, 0, 0, 1),
+        )
+        .await
+        .unwrap();
 
-    // #[tokio::test]
-    // async fn stdio_output() {
-    //     todo!()
-    // }
+        // FIX: Implement Rebuild of WasiCtx on every run
+        // Try allowed
+        assert_eq!(
+            "### TCP ###",
+            lambda.run("TCP,127.0.0.1:50402").await.unwrap()
+        );
+        assert_eq!(
+            "### UDP ###",
+            lambda.run("UDP,127.0.0.1:50403").await.unwrap()
+        );
+
+        // not allowed ip for tcp/udp
+        assert_eq!(
+            LambdaError::FunctionExecError,
+            lambda.run("TCP,192.168.112.2:50400").await.unwrap_err()
+        );
+        assert_eq!(
+            LambdaError::FunctionExecError,
+            lambda.run("UDP,192.168.112.2:50401").await.unwrap_err()
+        );
+    }
 }

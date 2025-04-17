@@ -51,13 +51,15 @@ impl Lambda {
             .map_err(|_| LambdaError::WasiAsyncLinkerError)?;
 
         // TCP/UDP listener over TAP
+        // FIX: TAP DEALLOCATED AFTER FIRST CLOSURE CALL, FOR NOW USING ARC
+        let tap_ip = tap_ip;
         let check_ip: Box<
             dyn Fn(SocketAddr, SocketAddrUse) -> Pin<Box<dyn Future<Output = bool> + Send + Sync>>
                 + Send
                 + Sync
                 + 'static,
         > = Box::new(move |socket, socket_check| {
-            let tap_ip = tap_ip; // catturazione nel move async
+            let tap_ip = tap_ip;
             Box::pin(async move {
                 match socket_check {
                     SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => match socket {

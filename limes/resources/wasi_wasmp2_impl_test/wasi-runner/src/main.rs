@@ -60,7 +60,7 @@ fn main() -> Result<()> {
 
     let component = Component::from_file(
         &engine,
-        "/home/viktor/Documents/git/tesi/src/limes/limes/resources/test/wasi-runner/run_wasip2.wasm",
+        "/home/viktor/Documents/git/tesi/src/limes/limes/resources/wasi_wasmp2_impl_test/wasi-runner/run_wasip2.wasm",
     )?;
     let mut store = Store::new(&engine, state);
     let instance = linker.instantiate(&mut store, &component)?;
