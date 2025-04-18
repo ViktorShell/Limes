@@ -73,7 +73,7 @@ impl Lambda {
 
         // Wasi & StoreLimits
         let wasi = WasiCtxBuilder::new()
-            .inherit_stdio()
+            // .inherit_stdio() // Still to dedice if implement and how to controll
             .socket_addr_check(check_ip)
             .build();
         let resource = ResourceTable::new();

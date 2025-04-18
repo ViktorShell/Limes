@@ -12,7 +12,7 @@ wit_bindgen::generate!({
     "
 });
 
-use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+use std::net::{TcpListener, UdpSocket};
 
 //  crate exported  component:run -> run interface -> Guest
 use crate::exports::component::run::run::Guest;
@@ -24,7 +24,6 @@ impl Guest for Component {
         let split: Vec<&str> = args.split(",").collect();
         let protocol = split[0];
         let ip_str = split[1];
-        println!("IPV4 => {}", ip_str);
 
         if protocol == "TCP" {
             #[allow(unused)]

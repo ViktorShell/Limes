@@ -81,19 +81,27 @@ mod test {
         component
     }
 
+    async fn get_lambda(
+        component_name: &str,
+        mem_size: usize,
+        tap_ip: Ipv4Addr,
+    ) -> (Lambda, impl Fn() -> Result<(), LambdaError>) {
+        let engine = Arc::new(gen_engine(true, true, OptLevel::Speed));
+        let file = get_crate_path().join(component_name);
+        let component = Arc::new(load_component(&engine, file));
+        Lambda::new(engine, component, mem_size, tap_ip)
+            .await
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn exec_rust_lambda_function() {
-        let engine = Arc::new(gen_engine(true, true, OptLevel::Speed));
-        let file = get_crate_path().join("exec_rust_lambda_function.wasm");
-        let component = Arc::new(load_component(&engine, file));
-        let (mut lambda, _) = Lambda::new(
-            engine,
-            component,
+        let (mut lambda, _) = get_lambda(
+            "exec_rust_lambda_function.wasm",
             1024 * 1024 * 2,
             Ipv4Addr::new(127, 0, 0, 1),
         )
-        .await
-        .unwrap();
+        .await;
 
         let res = lambda.run("").await.unwrap();
         assert_eq!(res, "### TEST ###");
@@ -101,17 +109,12 @@ mod test {
 
     #[tokio::test]
     async fn stop_infinite_loop_function() {
-        let engine = Arc::new(gen_engine(true, true, OptLevel::Speed));
-        let file = get_crate_path().join("stop_infinite_loop.wasm");
-        let component = Arc::new(load_component(&engine, file));
-        let (mut lambda, stop_func) = Lambda::new(
-            engine,
-            component,
+        let (mut lambda, stop_func) = get_lambda(
+            "stop_infinite_loop.wasm",
             1024 * 1204 * 2,
             Ipv4Addr::new(127, 0, 0, 1),
         )
-        .await
-        .unwrap();
+        .await;
 
         let handler = tokio::spawn(async move { lambda.run("").await });
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -119,7 +122,8 @@ mod test {
             stop_func().unwrap();
             if let Err(LambdaError::ForceStop) = handler.await.unwrap() {
                 assert!(true);
-                return; // assert just exec a check it doesn't stop the function
+                return; // assert just exec a check on the value and doesn't stop the function, this little error
+                        // make me rethink about my career choose
             }
         }
         assert!(false);
@@ -160,37 +164,55 @@ mod test {
 
     #[tokio::test]
     async fn tcp_udp_bind_to_not_allowed_ip() {
-        let engine = Arc::new(gen_engine(true, true, OptLevel::Speed));
-        let file = get_crate_path().join("tcp_udp_bind_to_not_allowed_ip.wasm");
-        let component = Arc::new(load_component(&engine, file));
-        let (mut lambda, _) = Lambda::new(
-            engine,
-            component,
+        let (mut lambda_right_tcp, _) = get_lambda(
+            "tcp_udp_bind_to_not_allowed_ip.wasm",
             1024 * 1024 * 2,
             Ipv4Addr::new(127, 0, 0, 1),
         )
-        .await
-        .unwrap();
+        .await;
+        let (mut lambda_wrong_tcp, _) = get_lambda(
+            "tcp_udp_bind_to_not_allowed_ip.wasm",
+            1024 * 1024 * 2,
+            Ipv4Addr::new(127, 0, 0, 1),
+        )
+        .await;
+        let (mut lambda_right_udp, _) = get_lambda(
+            "tcp_udp_bind_to_not_allowed_ip.wasm",
+            1024 * 1024 * 2,
+            Ipv4Addr::new(127, 0, 0, 1),
+        )
+        .await;
+        let (mut lambda_wrong_udp, _) = get_lambda(
+            "tcp_udp_bind_to_not_allowed_ip.wasm",
+            1024 * 1024 * 2,
+            Ipv4Addr::new(127, 0, 0, 1),
+        )
+        .await;
 
-        // FIX: Implement Rebuild of WasiCtx on every run
-        // Try allowed
+        // allowed ip for tcp/udp
         assert_eq!(
             "### TCP ###",
-            lambda.run("TCP,127.0.0.1:50402").await.unwrap()
+            lambda_right_tcp.run("TCP,127.0.0.1:50402").await.unwrap()
         );
         assert_eq!(
             "### UDP ###",
-            lambda.run("UDP,127.0.0.1:50403").await.unwrap()
+            lambda_right_udp.run("UDP,127.0.0.1:50403").await.unwrap()
         );
 
         // not allowed ip for tcp/udp
         assert_eq!(
             LambdaError::FunctionExecError,
-            lambda.run("TCP,192.168.112.2:50400").await.unwrap_err()
+            lambda_wrong_tcp
+                .run("TCP,192.168.1.2:50400")
+                .await
+                .unwrap_err()
         );
         assert_eq!(
             LambdaError::FunctionExecError,
-            lambda.run("UDP,192.168.112.2:50401").await.unwrap_err()
+            lambda_wrong_udp
+                .run("UDP,192.168.1.2:50401")
+                .await
+                .unwrap_err()
         );
     }
 }
