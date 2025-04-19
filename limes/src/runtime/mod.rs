@@ -1,44 +1,101 @@
+use lambda::Lambda;
+use lambda_error::LambdaError;
+use nanoid::alphabet;
+use nanoid::nanoid;
 use phf::map::Map;
-use uuid::Uuid;
+use std::sync::Arc;
+use uuid::uuid;
+use wasmtime::component::Component;
+use wasmtime::EngineWeak;
+
 pub mod lambda;
 pub mod lambda_error;
+pub mod runtime_error;
+
+pub struct RuntimeBuilder {
+    vcpus: Option<usize>,
+    memory: Option<usize>,
+}
+
+impl RuntimeBuilder {
+    pub fn set_cpus(&mut self, vcpus: usize) -> &mut Self {
+        self.vcpus = Some(vcpus);
+        self
+    }
+
+    pub fn set_total_memory_size(&mut self, memory_size: usize) -> &mut Self {
+        self.memory = Some(memory_size);
+        self
+    }
+
+    pub fn build(&self) -> Runtime {
+        Runtime {
+            vcpus: self.vcpus.unwrap(),
+            memory: self.memory.unwrap(),
+            engines: Vec::new(),
+            modules: Map::new(),
+            lambda_ready_exec: Map::new(),
+            lambda_stop_exec: Map::new(),
+            lambda_running_function: Map::new(),
+        }
+    }
+}
 
 #[allow(dead_code)]
-struct Runtime {
-    vcpus: u8,
-    memory: u32,
-    modules: Map<Uuid, String>,
-    ready_modules: Map<Uuid, String>,
-    running_modules: Map<Uuid, String>,
+pub struct Runtime {
+    vcpus: usize,
+    memory: usize,
+    engines: Vec<EngineWeak>,
+    modules: Map<String, Arc<Component>>,
+    lambda_ready_exec: Map<String, Lambda>,
+    lambda_stop_exec: Map<String, Box<dyn Fn() -> Result<(), LambdaError>>>,
+    lambda_running_function: Map<String, bool>,
 }
+
 #[allow(dead_code)]
 impl Runtime {
-    pub fn new() {
+    // Costruct the Runtime
+    pub fn new() -> RuntimeBuilder {
+        RuntimeBuilder {
+            vcpus: Some(1),
+            memory: Some(1024 * 1024 * 10), // Instance for 10 instance of 2Mb each
+        }
+    }
+
+    // Get the code in byteform, try to compile it and save it a sqa db and make it ready for
+    // deployment, return an uuid of the module
+    pub async fn register_module() {
         todo!();
     }
 
-    pub fn register() {
+    // Remove a registered module
+    pub async fn remove_module() {
         todo!();
     }
 
-    pub fn remove() {
+    // Initialize a lambda function and return an nanoid
+    pub async fn init_lambda() {
         todo!();
     }
 
-    pub async fn start() {
+    // Remove a lambda function from the registry
+    pub async fn remove_lambda() {
         todo!();
     }
 
-    pub async fn stop() {
+    // Execute lambda with args
+    pub async fn run_lambda() {
         todo!();
     }
 
-    pub async fn is_running() {
+    // Interrupt the execution of a lambda
+    pub async fn stop_lambda() {
         todo!();
     }
 
-    pub async fn is_ready() {
-        todo!();
+    // check if a lambda function is currently running
+    fn is_lambda_running() {
+        todo!()
     }
 }
 
