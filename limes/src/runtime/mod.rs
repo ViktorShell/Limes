@@ -219,27 +219,63 @@ mod test {
         assert_eq!(result, "[a,b,c,d,e,f]");
     }
 
+    // #[tokio::test]
+    // async fn tcp_udp_bind_to_not_allowed_ip() {
+    //     let (mut lambda_right_tcp, _) = get_lambda(
+    //         "tcp_udp_bind_to_not_allowed_ip.wasm",
+    //         1024 * 1024 * 2,
+    //         Ipv4Addr::new(127, 0, 0, 1),
+    //     )
+    //     .await;
+    //     let (mut lambda_wrong_tcp, _) = get_lambda(
+    //         "tcp_udp_bind_to_not_allowed_ip.wasm",
+    //         1024 * 1024 * 2,
+    //         Ipv4Addr::new(127, 0, 0, 1),
+    //     )
+    //     .await;
+    //     let (mut lambda_right_udp, _) = get_lambda(
+    //         "tcp_udp_bind_to_not_allowed_ip.wasm",
+    //         1024 * 1024 * 2,
+    //         Ipv4Addr::new(127, 0, 0, 1),
+    //     )
+    //     .await;
+    //     let (mut lambda_wrong_udp, _) = get_lambda(
+    //         "tcp_udp_bind_to_not_allowed_ip.wasm",
+    //         1024 * 1024 * 2,
+    //         Ipv4Addr::new(127, 0, 0, 1),
+    //     )
+    //     .await;
+    //
+    //     // allowed ip for tcp/udp
+    //     assert_eq!(
+    //         "### TCP ###",
+    //         lambda_right_tcp.run("TCP,127.0.0.1:50402").await.unwrap()
+    //     );
+    //     assert_eq!(
+    //         "### UDP ###",
+    //         lambda_right_udp.run("UDP,127.0.0.1:50403").await.unwrap()
+    //     );
+    //
+    //     // not allowed ip for tcp/udp
+    //     assert_eq!(
+    //         LambdaError::FunctionExecError,
+    //         lambda_wrong_tcp
+    //             .run("TCP,192.168.1.2:50400")
+    //             .await
+    //             .unwrap_err()
+    //     );
+    //     assert_eq!(
+    //         LambdaError::FunctionExecError,
+    //         lambda_wrong_udp
+    //             .run("UDP,192.168.1.2:50401")
+    //             .await
+    //             .unwrap_err()
+    //     );
+    // }
+
     #[tokio::test]
     async fn tcp_udp_bind_to_not_allowed_ip() {
-        let (mut lambda_right_tcp, _) = get_lambda(
-            "tcp_udp_bind_to_not_allowed_ip.wasm",
-            1024 * 1024 * 2,
-            Ipv4Addr::new(127, 0, 0, 1),
-        )
-        .await;
-        let (mut lambda_wrong_tcp, _) = get_lambda(
-            "tcp_udp_bind_to_not_allowed_ip.wasm",
-            1024 * 1024 * 2,
-            Ipv4Addr::new(127, 0, 0, 1),
-        )
-        .await;
-        let (mut lambda_right_udp, _) = get_lambda(
-            "tcp_udp_bind_to_not_allowed_ip.wasm",
-            1024 * 1024 * 2,
-            Ipv4Addr::new(127, 0, 0, 1),
-        )
-        .await;
-        let (mut lambda_wrong_udp, _) = get_lambda(
+        let (mut lambda, _) = get_lambda(
             "tcp_udp_bind_to_not_allowed_ip.wasm",
             1024 * 1024 * 2,
             Ipv4Addr::new(127, 0, 0, 1),
@@ -249,27 +285,21 @@ mod test {
         // allowed ip for tcp/udp
         assert_eq!(
             "### TCP ###",
-            lambda_right_tcp.run("TCP,127.0.0.1:50402").await.unwrap()
+            lambda.run("TCP,127.0.0.1:50402").await.unwrap()
         );
         assert_eq!(
             "### UDP ###",
-            lambda_right_udp.run("UDP,127.0.0.1:50403").await.unwrap()
+            lambda.run("UDP,127.0.0.1:50403").await.unwrap()
         );
 
         // not allowed ip for tcp/udp
         assert_eq!(
             LambdaError::FunctionExecError,
-            lambda_wrong_tcp
-                .run("TCP,192.168.1.2:50400")
-                .await
-                .unwrap_err()
+            lambda.run("TCP,192.168.1.2:50400").await.unwrap_err()
         );
         assert_eq!(
             LambdaError::FunctionExecError,
-            lambda_wrong_udp
-                .run("UDP,192.168.1.2:50401")
-                .await
-                .unwrap_err()
+            lambda.run("UDP,192.168.1.2:50401").await.unwrap_err()
         );
     }
 }

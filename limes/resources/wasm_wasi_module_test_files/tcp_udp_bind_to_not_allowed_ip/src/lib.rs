@@ -27,11 +27,13 @@ impl Guest for Component {
 
         if protocol == "TCP" {
             #[allow(unused)]
-            let tpc_listener = TcpListener::bind(ip_str).unwrap();
+            let tcp_listener = TcpListener::bind(ip_str).unwrap();
+            drop(tcp_listener);
             return "### TCP ###".to_string();
         } else if protocol == "UDP" {
             #[allow(unused)]
             let udp_listener = UdpSocket::bind(ip_str).unwrap();
+            drop(udp_listener);
             return "### UDP ###".to_string();
         }
         return "### ERROR ###".to_string();

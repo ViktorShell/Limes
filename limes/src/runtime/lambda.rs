@@ -51,31 +51,10 @@ impl Lambda {
             .map_err(|_| LambdaError::WasiAsyncLinkerError)?;
 
         // TCP/UDP listener over TAP
-        // FIX: TAP DEALLOCATED AFTER FIRST CLOSURE CALL, FOR NOW USING ARC
-        let tap_ip = tap_ip;
-        let check_ip: Box<
-            dyn Fn(SocketAddr, SocketAddrUse) -> Pin<Box<dyn Future<Output = bool> + Send + Sync>>
-                + Send
-                + Sync
-                + 'static,
-        > = Box::new(move |socket, socket_check| {
-            let tap_ip = tap_ip;
-            Box::pin(async move {
-                match socket_check {
-                    SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => match socket {
-                        SocketAddr::V4(socket_v4) => socket_v4.ip().eq(&tap_ip),
-                        SocketAddr::V6(_) => false,
-                    },
-                    _ => true,
-                }
-            })
-        });
+        let check_ip = Lambda::gen_check_ip_closure(tap_ip);
 
         // Wasi & StoreLimits
-        let wasi = WasiCtxBuilder::new()
-            // .inherit_stdio() // Still to dedice if implement and how to controll
-            .socket_addr_check(check_ip)
-            .build();
+        let wasi = WasiCtxBuilder::new().socket_addr_check(check_ip).build();
         let resource = ResourceTable::new();
 
         if memory_size < 1024 * 1024 * 2 {
@@ -131,6 +110,27 @@ impl Lambda {
         ))
     }
 
+    pub fn gen_check_ip_closure(
+        tap_ip: Ipv4Addr,
+    ) -> Box<
+        dyn Fn(SocketAddr, SocketAddrUse) -> Pin<Box<dyn Future<Output = bool> + Send + Sync>>
+            + Send
+            + Sync
+            + 'static,
+    > {
+        Box::new(move |socket, socket_check| {
+            Box::pin(async move {
+                match socket_check {
+                    SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => match socket {
+                        SocketAddr::V4(socket_v4) => socket_v4.ip().eq(&tap_ip),
+                        SocketAddr::V6(_) => false,
+                    },
+                    _ => true,
+                }
+            })
+        })
+    }
+
     pub async fn run(&mut self, args: &str) -> Result<String, LambdaError> {
         let instance = &self.instance;
         let mut store = &mut self.store;
@@ -154,14 +154,21 @@ impl Lambda {
             .call_async(&mut store, (args,))
             .await
             // TODO: Add wasi error message instead of FunctionExecError
-            .map_err(move |_| {
+            .map_err(move |e| {
                 if stop_copy.load(Ordering::Relaxed) {
                     LambdaError::ForceStop
                 } else {
+                    // FIX: Remove e and println
+                    println!("{}", e);
                     LambdaError::FunctionExecError
                 }
             })?
             .0;
+        // Random doc, this took me so much time to understand...
+        // This function clean the memory after a call otherwise next time you call the same
+        // function it just crash... and the error give no meaning...
+        // obv documentation is trash
+        let _ = func.post_return_async(store).await;
 
         Ok(result)
     }

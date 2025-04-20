@@ -1,0 +1,6 @@
+- The lambda.run should only have the func
+- Add a logger to the project +limes
+- Add axum interface for register, unregister, start and stop +limes
+- Add documentation +limes
+- Create a local DB for the modules +limes
+- Force yield thread +limes
