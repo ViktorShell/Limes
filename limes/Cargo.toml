@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.97"
 async-trait = "0.1.88"
+crc32fast = "1.4.2"
 json = "0.12.4"
 nanoid = "0.4.0"
 phf = "0.11.3"

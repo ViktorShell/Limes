@@ -4,3 +4,5 @@
 - Add documentation +limes
 - Create a local DB for the modules +limes
 - Force yield thread +limes
+
+Any function registered and initialized have a second id to identify the runtime
