@@ -76,7 +76,7 @@ impl Lambda {
         let instance = linker
             .instantiate_async(&mut store, &component)
             .await
-            .map_err(|_| LambdaError::InstanceBuilderError)?;
+            .map_err(|e| LambdaError::InstanceBuilderError(e.to_string()))?;
 
         // Interrupt mechanism
         let stop = Arc::new(AtomicBool::new(false));

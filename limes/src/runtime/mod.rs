@@ -5,12 +5,13 @@ use nanoid::alphabet;
 use nanoid::nanoid;
 use runtime_error::RuntimeError;
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::sync::RwLock;
 use wasmtime::component::Component;
 use wasmtime::Config;
 use wasmtime::Engine;
 use wasmtime::OptLevel;
-use wasmtime_wasi::bindings::random;
 
 pub mod lambda;
 pub mod lambda_error;
@@ -19,6 +20,8 @@ pub mod runtime_error;
 pub struct RuntimeBuilder {
     vcpus: Option<usize>,
     memory: Option<usize>,
+    max_functions: Option<usize>,
+    currently_allocated_functions: Option<usize>,
 }
 
 impl RuntimeBuilder {
@@ -32,20 +35,12 @@ impl RuntimeBuilder {
         self
     }
 
-    fn gen_engines(
-        &self,
-        num: usize,
-        config: &wasmtime::Config,
-    ) -> Result<Vec<Arc<Engine>>, runtime_error::RuntimeError> {
-        let mut engines = Vec::new();
-        for _ in 0..num {
-            let engine = Arc::new(Engine::new(config).map_err(|_| RuntimeError::EngineInitError)?);
-            engines.push(engine);
-        }
-        Ok(engines)
+    pub fn set_max_functions_number(&mut self, size: usize) -> &mut Self {
+        self.max_functions = Some(size);
+        self
     }
 
-    pub fn build(&self) -> Result<Runtime, runtime_error::RuntimeError> {
+    pub fn build(&self) -> Result<Runtime, RuntimeError> {
         let mut engines_config = Config::new();
         engines_config
             .async_support(true)
@@ -56,35 +51,217 @@ impl RuntimeBuilder {
         Ok(Runtime {
             vcpus: self.vcpus.unwrap(),
             memory: self.memory.unwrap(),
+            max_functions: self.max_functions.unwrap(),
+            currently_allocated_functions: self.currently_allocated_functions.unwrap(),
             engines,
             engine_rotatory_index: 0,
             modules: HashMap::new(),
-            // lambda_ready_exec: HashMap::new(),
-            lambda_stop_exec: HashMap::new(),
-            // lambda_running_function: HashMap::new(),
+            functions: HashMap::new(),
         })
+    }
+
+    fn gen_engines(
+        &self,
+        num: usize,
+        config: &wasmtime::Config,
+    ) -> Result<Vec<Arc<Engine>>, RuntimeError> {
+        let mut engines = Vec::new();
+        for _ in 0..num {
+            let engine = Arc::new(Engine::new(config).map_err(|_| RuntimeError::EngineInitError)?);
+            engines.push(engine);
+        }
+        Ok(engines)
     }
 }
 
-#[allow(dead_code)]
+pub struct FunctionHandler {
+    lambda: Lambda,
+    stop_func: Arc<Box<dyn Fn() -> Result<(), LambdaError>>>,
+    status: FunctionHandlerStatus,
+}
+
+#[derive(PartialEq)]
+pub enum FunctionHandlerStatus {
+    Ready,
+    Running,
+    Stopped,
+}
+
 pub struct Runtime {
     vcpus: usize,
     memory: usize,
+    max_functions: usize,
+    currently_allocated_functions: usize,
     engines: Vec<Arc<Engine>>,
+    // Temporary solution for engine deployment, need a HeapMin for a good queue
     engine_rotatory_index: usize,
-    modules: HashMap<u32, Arc<Component>>,
-    // lambda_ready_exec: HashMap<String, Lambda>,
-    lambda_stop_exec: HashMap<String, Box<dyn Fn() -> Result<(), LambdaError>>>,
-    // lambda_running_function: HashMap<String, bool>,
+    modules: HashMap<String, Arc<Component>>,
+    functions: HashMap<String, Arc<RwLock<FunctionHandler>>>,
 }
 
-#[allow(dead_code)]
 impl Runtime {
     // Costruct the Runtime
     pub fn new() -> RuntimeBuilder {
         RuntimeBuilder {
             vcpus: Some(1),
             memory: Some(1024 * 1024 * 10), // Instance for 10 instance of 2Mb each
+            max_functions: Some(1000),
+            currently_allocated_functions: Some(0),
+        }
+    }
+
+    // Get the code in byteform, try to compile it and save it a sqa db and make it ready for
+    // deployment, return an uuid of the module
+    // NOTE: Add the following
+    // - Register to DB
+    // - Logger
+    pub async fn register_module(&mut self, module: Vec<u8>) -> Result<String, RuntimeError> {
+        let engine = self.get_engine();
+        let mut hasher = Hasher::new();
+        hasher.update(&module);
+        let module_id = hasher.finalize().to_string();
+        if self.modules.contains_key(&module_id) {
+            return Err(RuntimeError::ModuleAlreadyReg);
+        }
+
+        let component = Arc::new(
+            wasmtime::component::Component::from_binary(&engine, &module)
+                .map_err(|_| RuntimeError::ComponentBuildError)?,
+        );
+        self.modules.insert(module_id.clone(), component);
+
+        Ok(module_id)
+    }
+
+    // Remove a registered module
+    // NOTE: Add the following
+    // - Register to DB
+    // - Logger
+    pub async fn remove_module(&mut self, module_id: String) -> bool {
+        if self.modules.contains_key(&module_id) {
+            self.modules.remove(&module_id);
+            return true;
+        }
+        false
+    }
+
+    // Initialize the function
+    // Doesn't need to check if already exists, because you can call only one a time
+    // Generate one
+    // return a function_id
+    pub async fn init_function(
+        &mut self,
+        module_id: String,
+        tap_ip: Ipv4Addr,
+    ) -> Result<String, RuntimeError> {
+        let component = self.get_component(module_id)?;
+        let engine = Arc::new(*(component.engine()));
+
+        if self.currently_allocated_functions >= self.max_functions {
+            return Err(RuntimeError::MaxFunctionDeplaymentReached);
+        }
+        let function_memory = self.memory / self.max_functions;
+        self.currently_allocated_functions += 1;
+        let (lambda, stop_func) = Lambda::new(engine, component, function_memory, tap_ip)
+            .await
+            .map_err(|e| RuntimeError::FunctionInitError(e.to_string()))?;
+
+        let function_handler = FunctionHandler {
+            lambda,
+            stop_func: Arc::new(Box::new(stop_func)),
+            status: FunctionHandlerStatus::Ready,
+        };
+
+        let func_id = nanoid!(20, &nanoid::alphabet::SAFE);
+        if let Some(_) = self
+            .functions
+            .insert(func_id.clone(), Arc::new(RwLock::new(function_handler)))
+        {
+            return Err(RuntimeError::FunctionAlreadyInitialized);
+        }
+
+        Ok(func_id)
+    }
+
+    // Remove a lambda function from the registry
+    // Search for the function
+    // if present remove it
+    // else return error
+    pub async fn remove_function(&mut self, func_id: &str) -> bool {
+        if self.functions.contains_key(func_id) {
+            self.functions.remove(func_id);
+            return true;
+        }
+        return false;
+    }
+
+    // Init the function and execute it
+    // Execute lambda with args
+    pub async fn exec_function(
+        &mut self,
+        func_id: &str,
+        args: &str,
+    ) -> Result<String, RuntimeError> {
+        // Check if initialized
+        let func_handler = match self.functions.get(func_id) {
+            Some(func_handler) => func_handler,
+            None => {
+                return Err(RuntimeError::FunctionExecError(
+                    "Function not initialized".to_string(),
+                ))
+            }
+        };
+
+        // Check status
+        match func_handler.read() {
+            Ok(handler) => {
+                if (*handler).status != FunctionHandlerStatus::Ready {
+                    return Err(RuntimeError::FunctionExecError(
+                        "Function is not in a ready state".to_string(),
+                    ));
+                }
+            }
+            Err(e) => return Err(RuntimeError::FunctionExecError(e.to_string())),
+        };
+
+        // Change status & exec func
+        let result = match func_handler.write() {
+            Ok(mut handler) => {
+                (*handler).status = FunctionHandlerStatus::Running;
+                let result = (*handler)
+                    .lambda
+                    .run(args)
+                    .await
+                    .map_err(|e| RuntimeError::FunctionExecError(e.to_string()))?;
+                result
+            }
+            Err(e) => return Err(RuntimeError::FunctionExecError(e.to_string())),
+        };
+
+        // Return result
+        Ok(result)
+    }
+
+    // Interrupt the execution of a lambda
+    pub async fn stop_function(&self, func_id: &str) -> Result<(), RuntimeError> {
+        // Check if initialized
+        let func_handler = match self.functions.get(func_id) {
+            Some(func_handler) => func_handler,
+            None => {
+                return Err(RuntimeError::FunctionExecError(
+                    "Function not initialized".to_string(),
+                ))
+            }
+        };
+
+        let stop_func = match func_handler.read() {
+            Ok(handler) => (*handler).stop_func.clone(),
+            Err(e) => return Err(RuntimeError::FunctionStopError(e.to_string())),
+        };
+
+        match stop_func() {
+            Err(e) => return Err(RuntimeError::FunctionStopError(e.to_string())),
+            _ => Ok(()),
         }
     }
 
@@ -101,93 +278,13 @@ impl Runtime {
         Arc::clone(self.engines.get(index).unwrap())
     }
 
-    // Get the code in byteform, try to compile it and save it a sqa db and make it ready for
-    // deployment, return an uuid of the module
-    // NOTE: Add the following
-    // - Register to DB
-    // - Logger
-    pub async fn register_module(
-        &mut self,
-        module: Vec<u8>,
-    ) -> Result<u32, runtime_error::RuntimeError> {
-        let engine = self.get_engine();
-        let bytes = module.as_slice();
-        let mut hasher = Hasher::new();
-        hasher.update(bytes);
-        let module_id = hasher.finalize();
-        if self.modules.contains_key(&module_id) {
-            return Err(RuntimeError::ModuleAlreadyReg);
+    fn get_component(&mut self, module_id: String) -> Result<Arc<Component>, RuntimeError> {
+        let component = self.modules.get(&module_id);
+        if let Some(component) = component {
+            return Ok(Arc::clone(component));
         }
-
-        let component = Arc::new(
-            wasmtime::component::Component::from_binary(&engine, bytes)
-                .map_err(|_| RuntimeError::ComponentBuildError)?,
-        );
-        self.modules.insert(module_id, component);
-
-        Ok(module_id)
+        Err(RuntimeError::ComponentNotFound)
     }
-
-    // Remove a registered module
-    // NOTE: Add the following
-    // - Register to DB
-    // - Logger
-    pub async fn remove_module(&mut self, module_id: u32) -> bool {
-        if self.modules.contains_key(&module_id) {
-            self.modules.remove(&module_id);
-            return true;
-        }
-        false
-    }
-
-    // // Remove a lambda function from the registry
-    // pub async fn remove_lambda() {
-    //     todo!();
-    // }
-
-    // Init the function and execute it
-    // Execute lambda with args
-    pub async fn run_lambda(
-        &mut self,
-        module_id: u32,
-        args: String,
-        tap_ip: std::net::Ipv4Addr,
-    ) -> Result<String, RuntimeError> {
-        let engine = self.get_engine();
-        let component = self.modules.get(&module_id).unwrap();
-        let (mut lambda, stop_closure) = Lambda::new(
-            Arc::clone(&engine),
-            Arc::clone(component),
-            1024 * 1024 * 5,
-            tap_ip,
-        )
-        .await
-        .unwrap();
-        let func_id = nanoid!(20, &alphabet::SAFE);
-        self.lambda_stop_exec
-            .insert(func_id, Box::new(stop_closure));
-        // FIX: Add error to the logger
-        let result = lambda
-            .run(&args)
-            .await
-            .map_err(|_| RuntimeError::LambdaFailedExec)?;
-        Ok(result)
-    }
-
-    // Interrupt the execution of a lambda
-    pub async fn stop_lambda(&self, func_id: &str) -> bool {
-        let stop_closure = self.lambda_stop_exec.get(func_id).unwrap();
-        let res = stop_closure();
-        match res {
-            Ok(()) => true,
-            Err(_e) => false,
-        }
-    }
-
-    // // check if a lambda function is currently running
-    // fn is_lambda_running() {
-    //     todo!()
-    // }
 }
 
 impl Default for Runtime {
@@ -195,6 +292,7 @@ impl Default for Runtime {
         let runtime = Runtime::new()
             .set_cpus(4)
             .set_total_memory_size(1024 * 1024 * 100)
+            .set_max_functions_number(25)
             .build()
             .unwrap();
         runtime
@@ -293,12 +391,14 @@ mod test {
         let bytes = std::fs::read(file).unwrap();
         let module_id = runtime.register_module(bytes).await.unwrap();
 
-        // Run function
-        let result = runtime
-            .run_lambda(module_id, "".to_string(), Ipv4Addr::new(127, 0, 0, 1))
+        // Init function
+        let func_id = runtime
+            .init_function(module_id, Ipv4Addr::new(127, 0, 0, 1))
             .await
             .unwrap();
-        dbg!(&result);
+
+        // Run function
+        let result = runtime.exec_function(&func_id, "").await.unwrap();
         assert_eq!(result, "### TEST ###");
     }
 

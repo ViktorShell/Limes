@@ -10,4 +10,16 @@ pub enum RuntimeError {
     ModuleAlreadyReg,
     #[error("RuntimeError: Lambda function failed to execute")]
     LambdaFailedExec,
+    #[error("RuntimeError: This module is not registered")]
+    ComponentNotFound,
+    #[error("RuntimeError: The max allocation of functions was reached")]
+    MaxFunctionDeplaymentReached,
+    #[error("RuntimeError: Was not able to init the function due to `{0}`")]
+    FunctionInitError(String),
+    #[error("RuntimeError: This functions is already initialized")]
+    FunctionAlreadyInitialized,
+    #[error("RuntimeError: Function was not able to execute due to `{0}`")]
+    FunctionExecError(String),
+    #[error("RuntimeError: Function was not able to stop due to `{0}`")]
+    FunctionStopError(String),
 }
