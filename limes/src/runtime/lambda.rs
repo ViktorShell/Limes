@@ -5,18 +5,12 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use wasmtime::component::{Component, Instance, Linker, ResourceTable};
+use wasmtime::component::{Component, Instance, Linker, ResourceTable, TypedFunc};
 use wasmtime::*;
 use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
 
-#[derive(Clone)]
-pub enum LambdaStatus {
-    Running,
-    Ready,
-}
-
 pub struct LambdaState {
-    wasi_ctx: WasiCtx,
+    wasi_ctx: WasiCtx, // This motherfucker doesnà't implement the Sync trait
     resource_table: ResourceTable,
     limiter: StoreLimits,
 }
@@ -34,142 +28,138 @@ impl WasiView for LambdaState {
 }
 
 pub struct Lambda {
-    store: Store<LambdaState>,
-    instance: Instance,
+    engine: Arc<Engine>,
+    component: Arc<Component>,
+    memory_size: usize,
+    tap_ip: Ipv4Addr,
     stop: Arc<AtomicBool>,
 }
 
 impl Lambda {
     pub async fn new(
-        engine: Arc<Engine>,
-        component: Arc<Component>,
-        memory_size: usize, // Pagine da 64Kbyte, minimo 2Mb -> 1024 * 1024 * 2
+        engine: Arc<Engine>,       // Cross-Engine key
+        component: Arc<Component>, // Cross-Engine key
+        memory_size: usize,
         tap_ip: Ipv4Addr,
-    ) -> Result<(Self, impl Fn() -> Result<(), LambdaError>), LambdaError> {
-        let mut linker = Linker::new(&*engine);
-        wasmtime_wasi::add_to_linker_async(&mut linker)
-            .map_err(|_| LambdaError::WasiAsyncLinkerError)?;
-
-        // TCP/UDP listener over TAP
-        let check_ip = Lambda::gen_check_ip_closure(tap_ip);
-
-        // Wasi & StoreLimits
-        let wasi = WasiCtxBuilder::new().socket_addr_check(check_ip).build();
-        let resource = ResourceTable::new();
-
+    ) -> Result<Self, LambdaError> {
         if memory_size < 1024 * 1024 * 2 {
             return Err(LambdaError::NotEnoughtMemory);
         }
-        let store_limits = StoreLimitsBuilder::new().memory_size(memory_size).build();
-
-        // State usend in Store<T> T = LambdaState
-        let state = LambdaState {
-            wasi_ctx: wasi,
-            resource_table: resource,
-            limiter: store_limits,
-        };
-        // Init store with memory limits
-        let mut store: Store<LambdaState> = Store::new(&engine, state);
-        store.limiter(|state| &mut state.limiter);
-
-        // Get the Component Instance
-        let instance = linker
-            .instantiate_async(&mut store, &component)
-            .await
-            .map_err(|e| LambdaError::InstanceBuilderError(e.to_string()))?;
-
-        // Interrupt mechanism
         let stop = Arc::new(AtomicBool::new(false));
-        let stop_clone = Arc::clone(&stop);
-        store.epoch_deadline_callback(move |_store| {
-            if !stop_clone.load(Ordering::Relaxed) {
+        Ok(Self {
+            engine,
+            component,
+            memory_size,
+            tap_ip,
+            stop,
+        })
+    }
+
+    pub async fn run(&self, args: &str) -> Result<String, LambdaError> {
+        // Setup the Linker and Wasi support
+        let mut linker = Linker::new(&self.engine);
+        wasmtime_wasi::add_to_linker_async(&mut linker)
+            .map_err(|e| LambdaError::WasiAsyncLinkerError(e.to_string()))?;
+        let mut store = self.store_with_wasi_support();
+
+        // Store register epoch_deadline_callback
+        let stop = self.stop.clone();
+        store.epoch_deadline_callback(move |_| {
+            if !stop.load(Ordering::Relaxed) {
                 return Ok(UpdateDeadline::Yield(1));
             }
             Err(LambdaError::ForceStop.into())
         });
 
-        // Force stop closure
-        let stop_ref = Arc::clone(&stop);
-        let engine_ref = Arc::clone(&engine);
-        let stop_closure = move || {
-            if stop_ref.load(Ordering::Relaxed) {
-                return Err(LambdaError::FunctionNotRunning);
-            }
-            stop_ref.store(true, Ordering::Relaxed);
-            engine_ref.increment_epoch();
-            Ok(())
-        };
+        // Get the function Instance from Component
+        let instance = linker
+            .instantiate_async(&mut store, &self.component)
+            .await
+            .map_err(|e| LambdaError::InstanceBuilderError(e.to_string()))?;
 
-        Ok((
-            Lambda {
-                store,
-                instance,
-                stop,
-            },
-            stop_closure,
-        ))
+        // Get the run function
+        let func = self.get_func_run(&instance, &mut store)?;
+
+        // Exec the function
+        let result = func
+            .call_async(&mut store, (args,))
+            .await
+            .map_err(|_| match self.stop.load(Ordering::Relaxed) {
+                true => LambdaError::ForceStop,
+                false => LambdaError::FunctionExecError,
+            })?
+            .0;
+
+        // Reset the store even though it will be deallocated
+        // I will remove it soon and change the way function exec
+        let _ = func.post_return_async(&mut store).await;
+        Ok(result)
     }
 
-    pub fn gen_check_ip_closure(
-        tap_ip: Ipv4Addr,
+    pub async fn stop(&self) -> Result<(), LambdaError> {
+        if self.stop.load(Ordering::Relaxed) {
+            return Err(LambdaError::FunctionNotRunning);
+        }
+        self.stop.store(true, Ordering::Relaxed);
+        self.engine.increment_epoch();
+        Ok(())
+    }
+
+    fn get_func_run(
+        &self,
+        instance: &Instance,
+        store: &mut Store<LambdaState>,
+    ) -> Result<TypedFunc<(&str,), (String,)>, LambdaError> {
+        let interface_idx = instance
+            .get_export(&mut *store, None, "component:run/run")
+            .ok_or(LambdaError::FunctionInterfaceError)
+            .map_err(|e| e)?;
+
+        let func_idx = instance
+            .get_export(&mut *store, Some(&interface_idx), "run")
+            .ok_or(LambdaError::FunctionInterfaceRetrievError)
+            .map_err(|e| e)?;
+
+        Ok(instance
+            .get_typed_func::<(&str,), (String,)>(&mut *store, func_idx)
+            .map_err(|e| LambdaError::FunctionRetrievError(e.to_string()))?)
+    }
+
+    fn store_with_wasi_support(&self) -> Store<LambdaState> {
+        let ip_checker = self.gen_check_ip_closure();
+        let wasi = WasiCtxBuilder::new().socket_addr_check(ip_checker).build();
+        let resource = ResourceTable::new();
+        let store_limits = StoreLimitsBuilder::new()
+            .memory_size(self.memory_size)
+            .build();
+        let state = LambdaState {
+            wasi_ctx: wasi,
+            resource_table: resource,
+            limiter: store_limits,
+        };
+        Store::new(&self.engine, state)
+    }
+
+    // Closure for ip checks
+    fn gen_check_ip_closure(
+        &self,
     ) -> Box<
         dyn Fn(SocketAddr, SocketAddrUse) -> Pin<Box<dyn Future<Output = bool> + Send + Sync>>
             + Send
             + Sync
             + 'static,
     > {
+        let local_tap_ip = self.tap_ip.clone(); // Fuck lifetimes for 4 bytes of data
         Box::new(move |socket, socket_check| {
             Box::pin(async move {
                 match socket_check {
                     SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => match socket {
-                        SocketAddr::V4(socket_v4) => socket_v4.ip().eq(&tap_ip),
+                        SocketAddr::V4(socket_v4) => socket_v4.ip().eq(&local_tap_ip),
                         SocketAddr::V6(_) => false,
                     },
                     _ => true,
                 }
             })
         })
-    }
-
-    pub async fn run(&mut self, args: &str) -> Result<String, LambdaError> {
-        let instance = &self.instance;
-        let mut store = &mut self.store;
-
-        let interface_idx = instance
-            .get_export(&mut store, None, "component:run/run")
-            .ok_or(LambdaError::FunctionInterfaceError)
-            .map_err(|e| e)?;
-
-        let func_idx = instance
-            .get_export(&mut store, Some(&interface_idx), "run")
-            .ok_or(LambdaError::FunctionInterfaceRetrievError)
-            .map_err(|e| e)?;
-
-        let func = instance
-            .get_typed_func::<(&str,), (String,)>(&mut store, func_idx)
-            .map_err(|_| LambdaError::FunctionRetrievError)?;
-
-        let stop_copy = Arc::clone(&self.stop);
-        let result = func
-            .call_async(&mut store, (args,))
-            .await
-            // TODO: Add wasi error message instead of FunctionExecError
-            .map_err(move |e| {
-                if stop_copy.load(Ordering::Relaxed) {
-                    LambdaError::ForceStop
-                } else {
-                    // FIX: Remove e and println
-                    println!("{}", e);
-                    LambdaError::FunctionExecError
-                }
-            })?
-            .0;
-        // Random doc, this took me so much time to understand...
-        // This function clean the memory after a call otherwise next time you call the same
-        // function it just crash... and the error give no meaning...
-        // obv documentation is trash
-        let _ = func.post_return_async(store).await;
-
-        Ok(result)
     }
 }

@@ -8,8 +8,8 @@ pub enum LambdaError {
     FunctionInterfaceError,
     #[error("Wasm function interface not found")]
     FunctionInterfaceRetrievError,
-    #[error("Wasm function not found")]
-    FunctionRetrievError,
+    #[error("Wasm function not found due to `{0}`")]
+    FunctionRetrievError(String),
     #[error("Wasm function exec error")]
     FunctionExecError,
     #[error("Wasm module not found")]
@@ -24,8 +24,8 @@ pub enum LambdaError {
     ArgsOutOfMemory,
     #[error("The module is not running")]
     FunctionNotRunning,
-    #[error("Wasi was not able add async capabilities to the linker")]
-    WasiAsyncLinkerError,
+    #[error("Wasi was not able add async capabilities to the linker due to `{0}`")]
+    WasiAsyncLinkerError(String),
     #[error("Allocate at least 2Mb of memory")]
     NotEnoughtMemory,
 }
