@@ -28,7 +28,7 @@ impl WasiView for LambdaState {
 }
 
 pub struct Lambda {
-    engine: Arc<Engine>,
+    // engine: Arc<Engine>,
     component: Arc<Component>,
     memory_size: usize,
     tap_ip: Ipv4Addr,
@@ -37,7 +37,7 @@ pub struct Lambda {
 
 impl Lambda {
     pub async fn new(
-        engine: Arc<Engine>,       // Cross-Engine key
+        // engine: Arc<Engine>,       // Cross-Engine key
         component: Arc<Component>, // Cross-Engine key
         memory_size: usize,
         tap_ip: Ipv4Addr,
@@ -47,7 +47,7 @@ impl Lambda {
         }
         let stop = Arc::new(AtomicBool::new(false));
         Ok(Self {
-            engine,
+            // engine,
             component,
             memory_size,
             tap_ip,
@@ -57,10 +57,11 @@ impl Lambda {
 
     pub async fn run(&self, args: &str) -> Result<String, LambdaError> {
         // Setup the Linker and Wasi support
-        let mut linker = Linker::new(&self.engine);
+        let engine = self.component.engine();
+        let mut linker = Linker::new(engine);
         wasmtime_wasi::add_to_linker_async(&mut linker)
             .map_err(|e| LambdaError::WasiAsyncLinkerError(e.to_string()))?;
-        let mut store = self.store_with_wasi_support();
+        let mut store = self.store_with_wasi_support(engine);
 
         // Store register epoch_deadline_callback
         let stop = self.stop.clone();
@@ -92,16 +93,17 @@ impl Lambda {
 
         // Reset the store even though it will be deallocated
         // I will remove it soon and change the way function exec
-        let _ = func.post_return_async(&mut store).await;
+        // let _ = func.post_return_async(&mut store).await;
         Ok(result)
     }
 
     pub async fn stop(&self) -> Result<(), LambdaError> {
+        let engine = self.component.engine();
         if self.stop.load(Ordering::Relaxed) {
             return Err(LambdaError::FunctionNotRunning);
         }
         self.stop.store(true, Ordering::Relaxed);
-        self.engine.increment_epoch();
+        engine.increment_epoch();
         Ok(())
     }
 
@@ -125,7 +127,7 @@ impl Lambda {
             .map_err(|e| LambdaError::FunctionRetrievError(e.to_string()))?)
     }
 
-    fn store_with_wasi_support(&self) -> Store<LambdaState> {
+    fn store_with_wasi_support(&self, engine: &Engine) -> Store<LambdaState> {
         let ip_checker = self.gen_check_ip_closure();
         let wasi = WasiCtxBuilder::new().socket_addr_check(ip_checker).build();
         let resource = ResourceTable::new();
@@ -137,7 +139,7 @@ impl Lambda {
             resource_table: resource,
             limiter: store_limits,
         };
-        Store::new(&self.engine, state)
+        Store::new(engine, state)
     }
 
     // Closure for ip checks

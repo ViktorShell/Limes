@@ -22,4 +22,8 @@ pub enum RuntimeError {
     FunctionExecError(String),
     #[error("RuntimeError: Function was not able to stop due to `{0}`")]
     FunctionStopError(String),
+    #[error("RuntimeError: The selected module was not registered")]
+    ModuleNotRegistered,
+    #[error("RuntimeError: The selected function was not registered")]
+    FunctionNotRegistered,
 }
