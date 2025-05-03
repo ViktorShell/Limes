@@ -2,13 +2,19 @@
 name = "limes"
 version = "0.1.0"
 edition = "2021"
+authors = ["Enrico Fiasco e.fiasco@studenti.unipi.it"]
+description = "Wasm async runtime server"
 
 [dependencies]
 anyhow = "1.0.97"
 async-trait = "0.1.88"
+axum = "0.8.4"
+clap = "4.5.37"
 crc32fast = "1.4.2"
 dashmap = "6.1.0"
+env_logger = "0.11.8"
 json = "0.12.4"
+log = "0.4.27"
 nanoid = "0.4.0"
 phf = "0.11.3"
 serde = "1.0.219"
