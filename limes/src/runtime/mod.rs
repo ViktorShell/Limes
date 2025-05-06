@@ -277,7 +277,7 @@ impl Runtime {
 impl Default for Runtime {
     fn default() -> Self {
         let runtime = Runtime::new()
-            .set_cpus(4)
+            .set_cpus(1)
             .set_total_memory_size(1024 * 1024 * 100)
             .set_max_functions_number(25)
             .build()

@@ -37,8 +37,7 @@ pub struct Lambda {
 
 impl Lambda {
     pub async fn new(
-        // engine: Arc<Engine>,       // Cross-Engine key
-        component: Arc<Component>, // Cross-Engine key
+        component: Arc<Component>, // Cross-Engine key, check it
         memory_size: usize,
         tap_ip: Ipv4Addr,
     ) -> Result<Self, LambdaError> {
@@ -139,7 +138,9 @@ impl Lambda {
             resource_table: resource,
             limiter: store_limits,
         };
-        Store::new(engine, state)
+        let mut store = Store::new(engine, state);
+        store.limiter(|data| &mut data.limiter);
+        store
     }
 
     // Closure for ip checks
