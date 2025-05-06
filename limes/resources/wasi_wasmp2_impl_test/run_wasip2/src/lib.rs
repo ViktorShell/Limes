@@ -1,19 +1,7 @@
-# Limes
-Distributed WebAssembly system for urgent edge cloud computing
-
-## Component
-cargo new --lib
-add to Cargo.toml
-```toml
-[lib]
-crate-type = ["cdylib"]
-```
-cargo add wit-bindgen
-**In the Code**
-```rust
 wit_bindgen::generate!({
     inline: r"
         package component:run;
+
         interface run {
             run: func(args: string) -> string;
         }
@@ -33,15 +21,11 @@ impl Guest for Component {
     #[allow(unused)]
     fn run(args: String) -> String {
         #[allow(unused)]
-        let listener = TcpListener::bind("127.0.0.1:50400").unwrap();
+        // let listener = TcpListener::bind("127.0.0.1:50400").unwrap();
+        let listener = TcpListener::bind("192.168.1.2:50400").unwrap();
         println!("ECHO FROM WASM COMPONENT");
         String::from("### TEST WASIp2")
     }
 }
 
 export!(Component);
-```
-cargo build --target wasm32-wasip2 --release
-
-## Host
-

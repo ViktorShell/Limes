@@ -1,0 +1,10 @@
+package component:run;
+
+interface run {
+    run: func(args: string) -> string;
+}
+
+/// An example world for the component to target.
+world runnable {
+    export run;
+}

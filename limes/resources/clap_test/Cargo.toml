@@ -1,0 +1,9 @@
+[package]
+name = "claptest"
+version = "0.1.0"
+edition = "2024"
+authors = ["Viktor Shell"]
+description = "Testing clap for cli arguments parsing"
+
+[dependencies]
+clap = { version = "4.5.37", features = ["derive"] }
