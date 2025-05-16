@@ -1,4 +1,4 @@
-use limes::runtime::Runtime;
+use limes::runtime::runtime::Runtime;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -8,6 +8,7 @@
 - Finish axum interface
 - Do the testing
 - Force yield thread to clap
+- Install & Run script
 
 Any function registered and initialized have a second id to identify the runtime
 
