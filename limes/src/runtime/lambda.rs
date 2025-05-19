@@ -10,7 +10,7 @@ use wasmtime::*;
 use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
 
 pub struct LambdaState {
-    wasi_ctx: WasiCtx, // This motherfucker doesnà't implement the Sync trait
+    wasi_ctx: WasiCtx, // This motherfucker doesn't implement the Sync trait
     resource_table: ResourceTable,
     limiter: StoreLimits,
 }
