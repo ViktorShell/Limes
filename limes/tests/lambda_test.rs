@@ -1,4 +1,4 @@
-use limes::runtime::lambda::Lambda;
+use limes::runtime::lambda::{self, Lambda};
 use limes::runtime::lambda_error::LambdaError;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
@@ -33,7 +33,8 @@ async fn get_lambda(component_name: &str, mem_size: usize, tap_ip: Ipv4Addr) -> 
     let engine = Arc::new(gen_engine(true, true, OptLevel::Speed));
     let file = get_crate_path().join(component_name);
     let component = Arc::new(load_component(&engine, file));
-    Lambda::new(component.clone(), mem_size, tap_ip)
+    let wasi_flags = lambda::WasiFlags::default();
+    Lambda::new(component.clone(), mem_size, tap_ip, wasi_flags)
         .await
         .unwrap()
 }

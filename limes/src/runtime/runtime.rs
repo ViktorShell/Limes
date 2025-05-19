@@ -1,3 +1,4 @@
+use super::lambda;
 use super::lambda::Lambda;
 use super::runtime_error::RuntimeError;
 use crc32fast::Hasher;
@@ -185,7 +186,8 @@ impl Runtime {
         let mut caf = self.currently_allocated_functions.write().await;
         *caf += 1;
 
-        let lambda = Lambda::new(component.clone(), func_mem_size, tap_ip)
+        let wasi_flags = lambda::WasiFlags::default();
+        let lambda = Lambda::new(component.clone(), func_mem_size, tap_ip, wasi_flags)
             .await
             .map_err(|e| RuntimeError::FunctionInitError(e.to_string()))?;
 

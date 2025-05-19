@@ -5,6 +5,14 @@ edition = "2021"
 authors = ["Enrico Fiasco e.fiasco@studenti.unipi.it"]
 description = "Limes, a wasm async runtime server"
 
+[[bin]]
+name = "limes"
+path = "src/main.rs"
+
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark_generator.rs"
+
 [dependencies]
 anyhow = "1.0.97"
 async-trait = "0.1.88"

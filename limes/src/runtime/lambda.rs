@@ -1,4 +1,5 @@
 use super::lambda_error::LambdaError;
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -7,6 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use wasmtime::component::{Component, Instance, Linker, ResourceTable, TypedFunc};
 use wasmtime::*;
+use wasmtime_wasi::DirPerms;
+use wasmtime_wasi::FilePerms;
 use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
 
 pub struct LambdaState {
@@ -28,11 +31,37 @@ impl WasiView for LambdaState {
 }
 
 pub struct Lambda {
-    // engine: Arc<Engine>,
     component: Arc<Component>,
     memory_size: usize,
     tap_ip: Ipv4Addr,
     stop: Arc<AtomicBool>,
+    wasi_flags: WasiFlags,
+}
+
+pub struct WasiFlags {
+    socket_addr_check: Option<()>,
+    file_mapper: Option<HashMap<String, (String, DirPerms, FilePerms)>>,
+}
+
+impl WasiFlags {
+    pub fn new(
+        socket_addr_check: Option<()>,
+        file_mapper: Option<HashMap<String, (String, DirPerms, FilePerms)>>,
+    ) -> Self {
+        Self {
+            socket_addr_check,
+            file_mapper,
+        }
+    }
+}
+
+impl Default for WasiFlags {
+    fn default() -> Self {
+        Self {
+            socket_addr_check: Some(()),
+            file_mapper: None,
+        }
+    }
 }
 
 impl Lambda {
@@ -40,17 +69,18 @@ impl Lambda {
         component: Arc<Component>, // Cross-Engine key, check it
         memory_size: usize,
         tap_ip: Ipv4Addr,
+        wasi_flags: WasiFlags,
     ) -> Result<Self, LambdaError> {
         if memory_size < 1024 * 1024 * 2 {
             return Err(LambdaError::NotEnoughtMemory);
         }
         let stop = Arc::new(AtomicBool::new(false));
         Ok(Self {
-            // engine,
             component,
             memory_size,
             tap_ip,
             stop,
+            wasi_flags,
         })
     }
 
@@ -60,7 +90,8 @@ impl Lambda {
         let mut linker = Linker::new(engine);
         wasmtime_wasi::add_to_linker_async(&mut linker)
             .map_err(|e| LambdaError::WasiAsyncLinkerError(e.to_string()))?;
-        let mut store = self.store_with_wasi_support(engine);
+        let wasi_ctx = self.build_wasi_ctx();
+        let mut store = self.build_store(engine, wasi_ctx);
 
         // Store register epoch_deadline_callback
         let stop = self.stop.clone();
@@ -126,9 +157,30 @@ impl Lambda {
             .map_err(|e| LambdaError::FunctionRetrievError(e.to_string()))?)
     }
 
-    fn store_with_wasi_support(&self, engine: &Engine) -> Store<LambdaState> {
-        let ip_checker = self.gen_check_ip_closure();
-        let wasi = WasiCtxBuilder::new().socket_addr_check(ip_checker).build();
+    fn build_wasi_ctx(&self) -> WasiCtx {
+        let mut wasictx = WasiCtxBuilder::new();
+        if let Some(_) = self.wasi_flags.socket_addr_check {
+            let ip_checker = self.gen_check_ip_closure();
+            wasictx.socket_addr_check(ip_checker);
+        }
+        if let Some(map) = &self.wasi_flags.file_mapper {
+            for (host, guest) in map.iter() {
+                let guest_path = guest.0.clone();
+                let dir_perms = guest.1;
+                let file_perms = guest.2;
+                wasictx
+                    .preopened_dir(host, guest_path, dir_perms, file_perms)
+                    .expect("Could not map the files from host to the guest runtime");
+            }
+        }
+        #[cfg(debug_assertions)]
+        {
+            wasictx.inherit_stdio();
+        }
+        wasictx.build()
+    }
+
+    fn build_store(&self, engine: &Engine, wasi: WasiCtx) -> Store<LambdaState> {
         let resource = ResourceTable::new();
         let store_limits = StoreLimitsBuilder::new()
             .memory_size(self.memory_size)
