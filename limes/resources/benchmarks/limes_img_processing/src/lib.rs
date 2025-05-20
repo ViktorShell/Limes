@@ -30,6 +30,7 @@ impl Guest for Component {
             .brighten(2)
             .adjust_contrast(1.5)
             .grayscale();
+        img.save(image_mod_path);
         args
     }
 }

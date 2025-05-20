@@ -1,0 +1,12 @@
+[package]
+name = "limes_img_processing"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+image = "0.25.6"
+wit-bindgen = "0.42.1"
+
