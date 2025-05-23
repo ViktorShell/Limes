@@ -3,7 +3,7 @@ name = "limes"
 version = "0.1.0"
 edition = "2021"
 authors = ["Enrico Fiasco e.fiasco@studenti.unipi.it"]
-description = "Limes, a wasm async runtime server"
+description = "Limes, a wasm async runtime library"
 
 [[bin]]
 name = "limes"

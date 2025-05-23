@@ -27,48 +27,57 @@ fn main() {
     let mut times_file = File::create("times.csv").expect("Could not create the times.csv");
 
     // Init header of the files
-    writeln!(
-        times_file,
-        "iteration,name,time_start,time_end,elapsed_time"
-    )
-    .expect("Could not write on the file");
+    writeln!(times_file, "iteration,func_name,elapsed_load,elapsed_mid")
+        .expect("Could not write on the file");
+
+    let iterations = 1;
 
     info!("Starting Cold Start evaluation");
-    for iter in 0..1000 {
-        let (name, start, end, elapsed) = evaluate_nop_cold_start(&mut root);
-        let data = format!("{},{},{},{},{}", iter, name, start, end, elapsed);
+    for iter in 0..iterations {
+        let (name, start, mid, end) = evaluate_nop_cold_start(&mut root);
+        let elapsed_load = (mid - start) as f32 / 1_000_000 as f32;
+        let elapsed_exec = (end - mid) as f32 / 1_000_000 as f32;
+        let data = format!("{},{},{},{}", iter, name, elapsed_load, elapsed_exec);
         writeln!(times_file, "{}", data).expect("Could not write on the file");
     }
     info!("Finish");
 
     info!("Starting img processing evaluation");
-    for iter in 0..1000 {
-        let (name, start, end, elapsed) = evaluate_img_proc(&mut root);
-        let data = format!("{},{},{},{},{}", iter, name, start, end, elapsed);
+    for iter in 0..iterations {
+        let (name, start, mid, end) = evaluate_img_proc(&mut root);
+        let elapsed_load = (mid - start) as f32 / 1_000_000 as f32;
+        let elapsed_exec = (end - mid) as f32 / 1_000_000 as f32;
+        let data = format!("{},{},{},{}", iter, name, elapsed_load, elapsed_exec);
         writeln!(times_file, "{}", data).expect("Could not write on the file");
     }
     info!("Finish");
 
     info!("Starting img processing evaluation with no writes");
-    for iter in 0..1000 {
-        let (name, start, end, elapsed) = evaluate_img_proc_no_io(&mut root);
-        let data = format!("{},{},{},{},{}", iter, name, start, end, elapsed);
+    for iter in 0..iterations {
+        let (name, start, mid, end) = evaluate_img_proc_no_io(&mut root);
+        let elapsed_load = (mid - start) as f32 / 1_000_000 as f32;
+        let elapsed_exec = (end - mid) as f32 / 1_000_000 as f32;
+        let data = format!("{},{},{},{}", iter, name, elapsed_load, elapsed_exec);
         writeln!(times_file, "{}", data).expect("Could not write on the file");
     }
     info!("Finish");
 
     info!("Starting mandelbrot set");
-    for iter in 0..1000 {
-        let (name, start, end, elapsed) = evaluate_mandelbrotset(&mut root);
-        let data = format!("{},{},{},{},{}", iter, name, start, end, elapsed);
+    for iter in 0..iterations {
+        let (name, start, mid, end) = evaluate_mandelbrotset(&mut root);
+        let elapsed_load = (mid - start) as f32 / 1_000_000 as f32;
+        let elapsed_exec = (end - mid) as f32 / 1_000_000 as f32;
+        let data = format!("{},{},{},{}", iter, name, elapsed_load, elapsed_exec);
         writeln!(times_file, "{}", data).expect("Could not write on the file");
     }
     info!("Finish");
 
     info!("Starting mandelbrot set with no writes");
-    for iter in 0..1000 {
-        let (name, start, end, elapsed) = evaluate_mandelbrotset_no_io(&mut root);
-        let data = format!("{},{},{},{},{}", iter, name, start, end, elapsed);
+    for iter in 0..iterations {
+        let (name, start, mid, end) = evaluate_mandelbrotset_no_io(&mut root);
+        let elapsed_load = (mid - start) as f32 / 1_000_000 as f32;
+        let elapsed_exec = (end - mid) as f32 / 1_000_000 as f32;
+        let data = format!("{},{},{},{}", iter, name, elapsed_load, elapsed_exec);
         writeln!(times_file, "{}", data).expect("Could not write on the file");
     }
     info!("Finish");
@@ -111,6 +120,7 @@ fn evaluate_img_proc(root: &mut PathBuf) -> (String, u128, u128, u128) {
         .expect("Error on init of img proc")
     });
 
+    let time_mid = get_time();
     let _ = rt.block_on(async { lambda.run("").await.expect("Error executing img proc") });
     let time_end = get_time();
 
@@ -118,8 +128,8 @@ fn evaluate_img_proc(root: &mut PathBuf) -> (String, u128, u128, u128) {
     (
         "image_processing".to_string(),
         time_start,
+        time_mid,
         time_end,
-        time_end - time_start,
     )
 }
 
@@ -159,6 +169,7 @@ fn evaluate_img_proc_no_io(root: &mut PathBuf) -> (String, u128, u128, u128) {
         .expect("Error on init of img proc")
     });
 
+    let time_mid = get_time();
     let _ = rt.block_on(async { lambda.run("").await.expect("Error executing img proc") });
     let time_end = get_time();
 
@@ -166,8 +177,8 @@ fn evaluate_img_proc_no_io(root: &mut PathBuf) -> (String, u128, u128, u128) {
     (
         "image_processing_no_io".to_string(),
         time_start,
+        time_mid,
         time_end,
-        time_end - time_start,
     )
 }
 
@@ -207,16 +218,12 @@ fn evaluate_mandelbrotset(root: &mut PathBuf) -> (String, u128, u128, u128) {
         .expect("Error on init of img proc")
     });
 
+    let time_mid = get_time();
     let _ = rt.block_on(async { lambda.run("").await.expect("Error executing img proc") });
     let time_end = get_time();
 
     // Return result
-    (
-        "mandelbrotset".to_string(),
-        time_start,
-        time_end,
-        time_end - time_start,
-    )
+    ("mandelbrotset".to_string(), time_start, time_mid, time_end)
 }
 
 fn evaluate_mandelbrotset_no_io(root: &mut PathBuf) -> (String, u128, u128, u128) {
@@ -243,6 +250,7 @@ fn evaluate_mandelbrotset_no_io(root: &mut PathBuf) -> (String, u128, u128, u128
         .expect("Error on init of img proc")
     });
 
+    let time_mid = get_time();
     let _ = rt.block_on(async { lambda.run("").await.expect("Error executing img proc") });
     let time_end = get_time();
 
@@ -250,8 +258,8 @@ fn evaluate_mandelbrotset_no_io(root: &mut PathBuf) -> (String, u128, u128, u128
     (
         "mandelbrotset_no_io".to_string(),
         time_start,
+        time_mid,
         time_end,
-        time_end - time_start,
     )
 }
 
@@ -279,16 +287,12 @@ fn evaluate_nop_cold_start(root: &mut PathBuf) -> (String, u128, u128, u128) {
         .expect("Error on init of img proc")
     });
 
+    let time_mid = get_time();
     let _ = rt.block_on(async { lambda.run("").await.expect("Error executing img proc") });
     let time_end = get_time();
 
     // Return result
-    (
-        "nop_cold_start".to_string(),
-        time_start,
-        time_end,
-        time_end - time_start,
-    )
+    ("nop_cold_start".to_string(), time_start, time_mid, time_end)
 }
 
 fn get_time() -> u128 {
