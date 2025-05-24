@@ -1,12 +1,15 @@
 # Limes
 Distributed WebAssembly system for urgent edge cloud computing
 
-# Running the Sync tests
-```cargo run --bin benchmark --release```
-This will take a while, like 40min on a 2Gh processor and depends by your disk speed.
-It will generate times.csv which includes the data relative to the execution time of Limes Lambda Executor
-Analysis of the data cone be found inside the analysis forlder:
+## Running the Sync tests
+``` bash
+cargo run --bin benchmark --release
 ```
+This will take a while, 40min on a 2Gh processor and depends by your disk speed.
+It will generate times.csv which includes the data relative cold start and exec time of the Limes Lambda Executor 
+Analysis of the data can be found inside the analysis folder:
+
+```bash
 cd analysis
 python -m venv .venv
 source .venv/bin/activate
