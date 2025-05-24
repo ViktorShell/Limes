@@ -20,7 +20,9 @@ Open data_analysis file
 
 ## User side function implementation
 How to create a Limes compatible serverless function
-```cargo new --lib```
+``` bash
+cargo new --lib
+```
 
 add to Cargo.toml
 ```toml
@@ -66,10 +68,10 @@ export!(Component);
 
 Install target
 ```bash
-    rustup target add wasm32-wasip2
+rustup target add wasm32-wasip2
 ```
 and compile
 ```bash
-    cargo build --target wasm32-wasip2 --release
+cargo build --target wasm32-wasip2 --release
 ```
 the source wasm file can be found in the target folder.
