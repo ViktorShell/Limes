@@ -13,7 +13,7 @@ use wasmtime_wasi::FilePerms;
 use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
 
 pub struct LambdaState {
-    wasi_ctx: WasiCtx, // This motherfucker doesn't implement the Sync trait
+    wasi_ctx: WasiCtx, // WARN: Doesn't implement Sync to prevent memory movemnts
     resource_table: ResourceTable,
     limiter: StoreLimits,
 }
@@ -66,7 +66,7 @@ impl Default for WasiFlags {
 
 impl Lambda {
     pub async fn new(
-        component: Arc<Component>, // Cross-Engine key, check it
+        component: Arc<Component>, // WARN: Cross-engine not supported, Engine and Component need to have the same key
         memory_size: usize,
         tap_ip: Ipv4Addr,
         wasi_flags: WasiFlags,
@@ -121,8 +121,8 @@ impl Lambda {
             })?
             .0;
 
-        // Reset the store even though it will be deallocated
-        // I will remove it soon and change the way function exec
+        // Reset the store even though it will be de-allocated.
+        // I will remove it soon and change the way the function exec.
         // let _ = func.post_return_async(&mut store).await;
         Ok(result)
     }
@@ -204,7 +204,7 @@ impl Lambda {
             + Sync
             + 'static,
     > {
-        let local_tap_ip = self.tap_ip.clone(); // Fuck lifetimes for 4 bytes of data
+        let local_tap_ip = self.tap_ip.clone();
         Box::new(move |socket, socket_check| {
             Box::pin(async move {
                 match socket_check {

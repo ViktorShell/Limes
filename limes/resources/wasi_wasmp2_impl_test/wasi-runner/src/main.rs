@@ -34,7 +34,7 @@ fn main() -> Result<()> {
             + Sync
             + 'static,
     > = Box::new(move |socket, socket_check| {
-        let tap_ip = tap_ip; // catturazione nel move async
+        let tap_ip = tap_ip;
         Box::pin(async move {
             match socket_check {
                 SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => match socket {
@@ -81,7 +81,6 @@ fn main() -> Result<()> {
     let typed = func.typed::<(&str,), (String,)>(&store)?;
     let (res,) = typed.call(&mut store, ("Hello ",))?;
 
-    // Sintassi strana
     println!("Function call => {}", res);
     Ok(())
 }

@@ -1,15 +1,34 @@
 # Limes
 Distributed WebAssembly system for urgent edge cloud computing
 
-## Component
-cargo new --lib
+# Running the Sync tests
+```cargo run --bin benchmark --release```
+This will take a while, like 40min on a 2Gh processor and depends by your disk speed.
+It will generate times.csv which includes the data relative to the execution time of Limes Lambda Executor
+Analysis of the data cone be found inside the analysis forlder:
+```
+cd analysis
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+jupyter notebook
+```
+Open data_analysis file
+
+## User side function implementation
+How to create a Limes compatible serverless function
+```cargo new --lib```
+
 add to Cargo.toml
 ```toml
 [lib]
 crate-type = ["cdylib"]
 ```
+```bash
 cargo add wit-bindgen
-**In the Code**
+```
+
+Modifie the lib.rs with:
 ```rust
 wit_bindgen::generate!({
     inline: r"
@@ -41,7 +60,13 @@ impl Guest for Component {
 
 export!(Component);
 ```
-cargo build --target wasm32-wasip2 --release
 
-## Host
-
+Install target
+```bash
+    rustup target add wasm32-wasip2
+```
+and compile
+```bash
+    cargo build --target wasm32-wasip2 --release
+```
+the source wasm file can be found in the target folder.

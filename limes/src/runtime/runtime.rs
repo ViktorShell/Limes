@@ -99,7 +99,7 @@ pub struct Runtime {
     max_functions: usize,
     currently_allocated_functions: Arc<RwLock<usize>>,
     engines: Arc<Vec<Arc<Engine>>>,
-    // Temporary solution for engine deployment, need a HeapMin for a good queue
+    // FIX: Temporary solution for engine deployment, need a HeapMin for a good queue
     engine_rotatory_index: Arc<RwLock<usize>>,
     modules: Arc<DashMap<ModuleID, Arc<ModuleHandler>>>,
     functions: Arc<DashMap<FunctionID, Arc<RwLock<FunctionHandler>>>>,
@@ -116,11 +116,6 @@ impl Runtime {
         }
     }
 
-    // Get the code in byteform, try to compile it and save it a sqa db and make it ready for
-    // deployment, return an uuid of the module
-    // NOTE: Add the following
-    // - Register to DB
-    // - Logger
     pub async fn register_module(&self, bytes: Vec<u8>) -> Result<ModuleID, RuntimeError> {
         let engine = self.get_engine().await;
         let hash = self.gen_module_hash(&bytes);
@@ -148,10 +143,6 @@ impl Runtime {
         hasher.finalize()
     }
 
-    // Remove a registered module
-    // NOTE: Add the following
-    // - Remove from DB
-    // - Logger
     pub async fn remove_module(&self, id: ModuleID) -> Result<(), RuntimeError> {
         if self.modules.contains_key(&id) {
             self.modules.remove(&id);
@@ -160,9 +151,6 @@ impl Runtime {
         Err(RuntimeError::ModuleNotRegistered)
     }
 
-    // Initialize the function
-    // Generate one
-    // return a function_id
     pub async fn init_function(
         &self,
         id: ModuleID,
@@ -207,7 +195,6 @@ impl Runtime {
         Ok(func_id)
     }
 
-    // Remove a lambda function from the registry
     pub async fn remove_function(&self, func_id: FunctionID) -> bool {
         if self.functions.contains_key(&func_id) {
             self.functions.remove(&func_id);
@@ -216,7 +203,6 @@ impl Runtime {
         false
     }
 
-    // Exec function
     pub async fn exec_function(
         &self,
         func_id: FunctionID,

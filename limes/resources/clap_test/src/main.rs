@@ -12,17 +12,17 @@ struct AppArgsData {
     /// This is data_3
     #[clap(long)]
     data_3: Option<String>,
-    /// Subcommand womp womp nigger
+    /// Subcommand
     #[clap(subcommand)]
     pub data_4: EntityType,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum EntityType {
-    /// Fà della roba da negro
+    /// User data
     User(UserCommand),
 
-    /// Puttana dio
+    /// Var
     Woke,
 }
 
@@ -39,9 +39,9 @@ pub enum UserSubCommand {
 
 #[derive(Debug, Args)]
 pub struct CreateUser {
-    /// Porco dio
+    /// Name of the user
     pub name: String,
-    /// Porca madonna
+    /// Email of the user
     pub email: String,
 }
 
