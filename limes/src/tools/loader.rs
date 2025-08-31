@@ -1,5 +1,6 @@
 use crate::runtime::lambda::Lambda;
 use crate::runtime::lambda::WasiFlags;
+use crate::runtime::lambda_error::LambdaError;
 use anyhow::Result;
 use std::net::Ipv4Addr;
 use std::path::Path;
@@ -9,11 +10,17 @@ use wasmtime::Config;
 use wasmtime::Engine;
 use wasmtime::OptLevel;
 
-pub async fn load_module_from_file(engine: &Engine, file: &Path) -> Result<Arc<Component>> {
+pub async fn load_module_from_file(
+    engine: &Engine,
+    file: &Path,
+) -> Result<Arc<wasmtime::component::Component>> {
     Ok(Arc::new(Component::from_file(engine, file)?))
 }
 
-pub async fn load_module_from_bytes(engine: &Engine, image: &[u8]) -> Result<Arc<Component>> {
+pub async fn load_module_from_bytes(
+    engine: &Engine,
+    image: &[u8],
+) -> Result<Arc<wasmtime::component::Component>> {
     Ok(Arc::new(Component::from_binary(engine, image)?))
 }
 
