@@ -20,7 +20,7 @@ async fn process_image() {
         ("./".to_string(), DirPerms::all(), FilePerms::all()),
     );
     let wasm_flags = WasiFlags::new(Some(()), Some(file_map));
-    let lambda = loader::build_lambda(
+    let lambda = loader::build_lambda_from_file(
         &wasm_path,
         1024 * 1024 * 1000,
         Ipv4Addr::new(127, 0, 0, 1),
@@ -47,7 +47,7 @@ async fn process_image_no_io() {
         ("./".to_string(), DirPerms::all(), FilePerms::all()),
     );
     let wasm_flags = WasiFlags::new(Some(()), Some(file_map));
-    let lambda = loader::build_lambda(
+    let lambda = loader::build_lambda_from_file(
         &wasm_path,
         1024 * 1024 * 1000,
         Ipv4Addr::new(127, 0, 0, 1),

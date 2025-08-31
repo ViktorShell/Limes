@@ -110,7 +110,7 @@ fn evaluate_img_proc(root: &mut PathBuf) -> (String, u128, u128, u128) {
     let time_start = get_time();
 
     let lambda = rt.block_on(async {
-        loader::build_lambda(
+        loader::build_lambda_from_file(
             &file,
             1024 * 1024 * 500,
             Ipv4Addr::new(127, 0, 0, 1),
@@ -159,7 +159,7 @@ fn evaluate_img_proc_no_io(root: &mut PathBuf) -> (String, u128, u128, u128) {
     let time_start = get_time();
 
     let lambda = rt.block_on(async {
-        loader::build_lambda(
+        loader::build_lambda_from_file(
             &file,
             1024 * 1024 * 500,
             Ipv4Addr::new(127, 0, 0, 1),
@@ -208,7 +208,7 @@ fn evaluate_mandelbrotset(root: &mut PathBuf) -> (String, u128, u128, u128) {
     let time_start = get_time();
 
     let lambda = rt.block_on(async {
-        loader::build_lambda(
+        loader::build_lambda_from_file(
             &file,
             1024 * 1024 * 500,
             Ipv4Addr::new(127, 0, 0, 1),
@@ -240,7 +240,7 @@ fn evaluate_mandelbrotset_no_io(root: &mut PathBuf) -> (String, u128, u128, u128
     let time_start = get_time();
 
     let lambda = rt.block_on(async {
-        loader::build_lambda(
+        loader::build_lambda_from_file(
             &file,
             1024 * 1024 * 500,
             Ipv4Addr::new(127, 0, 0, 1),
@@ -277,7 +277,7 @@ fn evaluate_nop_cold_start(root: &mut PathBuf) -> (String, u128, u128, u128) {
     let time_start = get_time();
 
     let lambda = rt.block_on(async {
-        loader::build_lambda(
+        loader::build_lambda_from_file(
             &file,
             1024 * 1024 * 500,
             Ipv4Addr::new(127, 0, 0, 1),

@@ -9,11 +9,15 @@ use wasmtime::Config;
 use wasmtime::Engine;
 use wasmtime::OptLevel;
 
-async fn load_module(engine: &Engine, file: &Path) -> Result<Arc<Component>> {
+pub async fn load_module_from_file(engine: &Engine, file: &Path) -> Result<Arc<Component>> {
     Ok(Arc::new(Component::from_file(engine, file)?))
 }
 
-async fn build_engine(async_support: bool, wasm_component_module: bool) -> Result<Engine> {
+pub async fn load_module_from_bytes(engine: &Engine, image: &[u8]) -> Result<Arc<Component>> {
+    Ok(Arc::new(Component::from_binary(engine, image)?))
+}
+
+pub async fn build_engine(async_support: bool, wasm_component_module: bool) -> Result<Engine> {
     let mut config = Config::new();
     config
         .async_support(async_support)
@@ -23,15 +27,14 @@ async fn build_engine(async_support: bool, wasm_component_module: bool) -> Resul
     Ok(engine)
 }
 
-#[allow(unused)]
-pub async fn build_lambda(
+pub async fn build_lambda_from_file(
     file: &Path,
     mem_size: usize,
     tap_ip: Ipv4Addr,
     wasi_flags: WasiFlags,
 ) -> Result<Lambda> {
     let engine = build_engine(true, true).await?;
-    let component = load_module(&engine, file).await?;
+    let component = load_module_from_file(&engine, file).await?;
     let lambda = Lambda::new(component, mem_size, tap_ip, wasi_flags).await?;
     Ok(lambda)
 }
