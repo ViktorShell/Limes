@@ -11,14 +11,14 @@ use wasmtime::Engine;
 use wasmtime::OptLevel;
 
 pub async fn load_module_from_file(
-    engine: &Engine,
+    engine: &wasmtime::Engine,
     file: &Path,
 ) -> Result<Arc<wasmtime::component::Component>> {
     Ok(Arc::new(Component::from_file(engine, file)?))
 }
 
 pub async fn load_module_from_bytes(
-    engine: &Engine,
+    engine: &wasmtime::Engine,
     image: &[u8],
 ) -> Result<Arc<wasmtime::component::Component>> {
     Ok(Arc::new(Component::from_binary(engine, image)?))
