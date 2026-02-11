@@ -72,6 +72,7 @@ impl Lambda {
         wasi_flags: WasiFlags,
     ) -> Result<Self, LambdaError> {
         if memory_size < 1024 * 1024 * 2 {
+            // 2MB
             return Err(LambdaError::NotEnoughtMemory);
         }
         let stop = Arc::new(AtomicBool::new(false));
