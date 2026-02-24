@@ -101,6 +101,7 @@ pub struct Runtime {
     engines: Arc<Vec<Arc<Engine>>>,
     // FIX: Temporary solution for engine deployment, need a HeapMin for a good queue
     engine_rotatory_index: Arc<RwLock<usize>>,
+    //user_id: Arc<DashMap<String, ModuleID>>
     modules: Arc<DashMap<ModuleID, Arc<ModuleHandler>>>,
     functions: Arc<DashMap<FunctionID, Arc<RwLock<FunctionHandler>>>>,
 }

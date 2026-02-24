@@ -1,6 +1,6 @@
 [package]
 name = "limes"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Enrico Fiasco e.fiasco@studenti.unipi.it"]
 description = "Limes, a wasm async runtime library"
@@ -22,9 +22,12 @@ crc32fast = "1.4.2"
 dashmap = "6.1.0"
 env_logger = "0.11.8"
 json = "0.12.4"
+llama-cpp-2 = "0.1.135"
+llama-cpp-sys-2 = "0.1.135"
 log = "0.4.27"
 nanoid = "0.4.0"
 phf = "0.11.3"
+regex = "1.12.3"
 serde = "1.0.219"
 thiserror = "2.0.12"
 tokio = { version = "1.44.1", features = ["full"] }
