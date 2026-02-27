@@ -3,15 +3,11 @@ name = "limes"
 version = "0.2.0"
 edition = "2021"
 authors = ["Enrico Fiasco e.fiasco@studenti.unipi.it"]
-description = "Limes, a wasm async runtime library"
+description = "Limes is a FaaS executor for Wasm Modules with support for SLLM's and LLM's"
 
 [[bin]]
 name = "limes"
 path = "src/main.rs"
-
-[[bin]]
-name = "benchmark"
-path = "src/bin/benchmark_generator.rs"
 
 [dependencies]
 anyhow = "1.0.97"
@@ -19,18 +15,15 @@ async-trait = "0.1.88"
 axum = "0.8.4"
 clap = { version = "4.5.37", features = ["derive"] }
 crc32fast = "1.4.2"
-dashmap = "6.1.0"
 env_logger = "0.11.8"
 json = "0.12.4"
 llama-cpp-2 = "0.1.135"
 llama-cpp-sys-2 = "0.1.135"
 log = "0.4.27"
 nanoid = "0.4.0"
-phf = "0.11.3"
 regex = "1.12.3"
 serde = "1.0.219"
-thiserror = "2.0.12"
 tokio = { version = "1.44.1", features = ["full"] }
-uuid = "1.15.1"
+uuid = { version = "1.15.1", features = ["v4"] }
 wasmtime = "30.0.2"
 wasmtime-wasi = "30.0.2"

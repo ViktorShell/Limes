@@ -26,4 +26,6 @@ pub enum RuntimeError {
     ModuleNotRegistered,
     #[error("RuntimeError: The selected function was not registered")]
     FunctionNotRegistered,
+    #[error("RuntimeError: Unable to register the user")]
+    UserRegistration,
 }
