@@ -3,11 +3,16 @@ use std::{
     sync::{atomic::AtomicUsize, Arc, OnceLock},
 };
 
+use crate::runtime::lambda::*;
 use anyhow::Context;
 use tokio::sync::RwLock;
-use wasmtime::{component::types::Component, Config, Engine};
+use wasmtime::{component::Component, Config, Engine};
 
-use crate::runtime::lambda::*;
+// NOTE: Used to initialized only one time the Runtime
+static SINGLETON_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+pub type UserId = String;
+pub type ModuleId = String;
 
 #[derive(Default)]
 pub struct UserModules {
@@ -15,7 +20,21 @@ pub struct UserModules {
     loaded_functions: Arc<HashMap<FunctionId, FunctionHandler>>,
 }
 
-static SINGLETON_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+impl UserModules {
+    pub fn insert_module(&mut self, bytes: &[u8]) -> bool {
+        todo!()
+    }
+
+    pub fn contains_module(&self, module_id: ModuleId) -> bool {
+        todo!()
+    }
+
+    pub fn remove_module(&mut self, module_id: ModuleId) -> bool {
+        todo!()
+    }
+}
+
+pub struct ModuleHandler(Arc<Component>);
 
 pub struct Runtime {
     vcpus: usize,
@@ -52,7 +71,37 @@ impl Runtime {
         Ok(())
     }
 
-    pub async fn register_module(&self, bytes: Vec<u8>) -> anyhow::Result<()> {
+    pub async fn register_module(&self, user_id: UserId, bytes: &[u8]) -> anyhow::Result<()> {
+        // Check if user is registered
+        if !self.users.read().await.contains_key(&user_id) {
+            return Err(anyhow::anyhow!(
+                "Runtime: Trying to register a module to a not registere user"
+            ));
+        }
+
+        // Check if module is already registered
+        if self.users.read().await.
+
+        // Create the module_handler
+        let engine = &*self.wasm_engine;
+        let wasm_binary = Arc::new(
+            Component::from_binary(engine, bytes)
+                .context("Runtime: The binary file could not be loaded")?,
+        );
+
+        let module_handler = ModuleHandler(wasm_binary.clone());
+
+        let user_module = self
+            .users
+            .write()
+            .await
+            .get_mut(&user_id)
+            .context("Runtime: Could not read the UserModules")?;
+
+        user_module.wasm_modules.Ok(())
+    }
+
+    pub async fn remove_module(&self) -> anyhow::Result<()> {
         todo!();
         Ok(())
     }
@@ -63,11 +112,6 @@ impl Runtime {
     }
 
     pub async fn exec_function(&self) -> anyhow::Result<()> {
-        todo!();
-        Ok(())
-    }
-
-    pub async fn remove_module(&self) -> anyhow::Result<()> {
         todo!();
         Ok(())
     }
@@ -138,9 +182,10 @@ mod test {
         let user_id_1 = rt.register_user().await.unwrap();
         let user_id_2 = rt.register_user().await.unwrap();
         let user_id_3 = rt.register_user().await.unwrap();
-        println!("USER_ID: {}", user_id_1);
-        println!("USER_ID: {}", user_id_2);
-        println!("USER_ID: {}", user_id_3);
+        assert!(!user_id_1.is_empty());
+        assert!(!user_id_2.is_empty());
+        assert!(!user_id_3.is_empty());
         rt.remove_user(user_id_1).await.unwrap();
+        assert_eq!(rt.users.read().await.len(), 2);
     }
 }
