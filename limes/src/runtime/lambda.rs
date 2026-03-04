@@ -22,7 +22,7 @@ use thiserror::Error;
 
 pub type FunctionId = String;
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd, Debug)]
 pub enum FunctionStatus {
     Ready,
     Running,
@@ -30,6 +30,7 @@ pub enum FunctionStatus {
 }
 
 /// The Function Handler have the role to create and handle the lambda functions
+#[derive(Debug)]
 pub struct FunctionHandler {
     lambda: Lambda,
     status: FunctionStatus,
@@ -209,6 +210,12 @@ impl Lambda {
     }
 }
 
+impl std::fmt::Debug for Lambda {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Lambda")
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::runtime::lambda::{Lambda, LambdaError};
@@ -221,7 +228,6 @@ mod test {
     use wasmtime::*;
 
     // NOTE: Directory where the wasm functions are located
-
     static WASM_RESOURCES: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/resources/lamda_tests/wasm_compiled"

@@ -5,6 +5,7 @@ use std::{
 
 use crate::runtime::lambda::*;
 use anyhow::Context;
+use crc32fast::Hasher;
 use tokio::sync::RwLock;
 use wasmtime::{component::Component, Config, Engine};
 
@@ -12,30 +13,60 @@ use wasmtime::{component::Component, Config, Engine};
 static SINGLETON_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 pub type UserId = String;
-pub type ModuleId = String;
+pub type ModuleId = u32;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct UserModules {
-    wasm_modules: Arc<HashMap<ModuleId, ModuleHandler>>,
-    loaded_functions: Arc<HashMap<FunctionId, FunctionHandler>>,
+    wasm_modules: Arc<RwLock<HashMap<ModuleId, ModuleHandler>>>,
+    loaded_functions: Arc<RwLock<HashMap<FunctionId, FunctionHandler>>>,
 }
 
 impl UserModules {
-    pub fn insert_module(&mut self, bytes: &[u8]) -> bool {
-        todo!()
+    pub async fn insert_module(
+        &self,
+        engine: &Engine,
+        key: ModuleId,
+        bytes: &[u8],
+    ) -> anyhow::Result<u32> {
+        // Create the module
+        let module_handler = ModuleHandler(Arc::new(
+            Component::from_binary(engine, bytes)
+                .context("UserModule: Unable to register the module")?,
+        ));
+
+        // Insert the module
+        (*self.wasm_modules)
+            .write()
+            .await
+            .insert(key, module_handler);
+        Ok(key)
     }
 
-    pub fn contains_module(&self, module_id: ModuleId) -> bool {
-        todo!()
+    pub async fn get_hash(&self, bytes: &[u8]) -> ModuleId {
+        let mut hasher = Hasher::new();
+        hasher.update(bytes);
+        hasher.finalize()
     }
 
-    pub fn remove_module(&mut self, module_id: ModuleId) -> bool {
-        todo!()
+    pub async fn contains_module(&self, module_id: &ModuleId) -> bool {
+        self.wasm_modules.read().await.contains_key(module_id)
+    }
+
+    pub async fn remove_module(&self, module_id: &ModuleId) {
+        // WARNING: Check if removing the module while the function is loaded create errors
+        self.wasm_modules.write().await.remove(module_id);
     }
 }
 
 pub struct ModuleHandler(Arc<Component>);
 
+impl std::fmt::Debug for ModuleHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ModuleHandler")
+    }
+}
+
+#[derive(Debug)]
 pub struct Runtime {
     vcpus: usize,
     memory_size: usize,
@@ -46,6 +77,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    #[allow(warnings)]
     pub fn new() -> RuntimeBuilder {
         RuntimeBuilder {
             vcpus: Some(1),
@@ -64,46 +96,60 @@ impl Runtime {
         Ok(user_id)
     }
 
-    pub async fn remove_user(&self, user_id: UserId) -> anyhow::Result<()> {
-        if self.users.read().await.contains_key(&user_id) {
-            self.users.write().await.remove(&user_id);
+    pub async fn remove_user(&self, user_id: &UserId) -> bool {
+        if self.users.read().await.contains_key(user_id) {
+            self.users.write().await.remove(user_id);
+            return true;
         }
-        Ok(())
+        false
     }
 
-    pub async fn register_module(&self, user_id: UserId, bytes: &[u8]) -> anyhow::Result<()> {
-        // Check if user is registered
-        if !self.users.read().await.contains_key(&user_id) {
-            return Err(anyhow::anyhow!(
-                "Runtime: Trying to register a module to a not registere user"
-            ));
-        }
+    pub async fn register_module(
+        &self,
+        user_id: &UserId,
+        bytes: &[u8],
+    ) -> anyhow::Result<ModuleId> {
+        let user_guard = self.users.read().await;
 
-        // Check if module is already registered
-        if self.users.read().await.
+        self.check_if_user_exist(user_id).await?;
 
-        // Create the module_handler
-        let engine = &*self.wasm_engine;
-        let wasm_binary = Arc::new(
-            Component::from_binary(engine, bytes)
-                .context("Runtime: The binary file could not be loaded")?,
-        );
+        // Insert the module in the UserModules
+        // NOTE: Secure unwrap due to UserModules::default()
+        let user_module = user_guard.get(user_id).unwrap();
 
-        let module_handler = ModuleHandler(wasm_binary.clone());
-
-        let user_module = self
-            .users
-            .write()
+        let key_hash = user_module.get_hash(bytes).await;
+        let module_id: ModuleId = user_module
+            .insert_module(&self.wasm_engine, key_hash, bytes)
             .await
-            .get_mut(&user_id)
-            .context("Runtime: Could not read the UserModules")?;
-
-        user_module.wasm_modules.Ok(())
+            .context("Runtime: Failed to load the Component from the bytes")?;
+        Ok(module_id)
     }
 
-    pub async fn remove_module(&self) -> anyhow::Result<()> {
-        todo!();
+    pub async fn remove_module(
+        &self,
+        user_id: &UserId,
+        module_id: &ModuleId,
+    ) -> anyhow::Result<()> {
+        let user_guard = self.users.read().await;
+
+        self.check_if_user_exist(user_id).await?;
+
+        // Get UserModules
+        let user_module = user_guard.get(user_id).unwrap();
+        if user_module.contains_module(module_id).await {
+            user_module.remove_module(module_id).await;
+        }
         Ok(())
+    }
+
+    async fn check_if_user_exist(&self, user_id: &UserId) -> anyhow::Result<bool> {
+        let user_guard = self.users.read().await;
+        if !user_guard.contains_key(user_id) {
+            return Err(anyhow::anyhow!(
+                "Runtime: Didn't fine the user with id: {user_id}"
+            ));
+        };
+        Ok(true)
     }
 
     pub async fn load_function(&self) -> anyhow::Result<()> {
@@ -119,6 +165,10 @@ impl Runtime {
     pub async fn unload_function(&self) -> anyhow::Result<()> {
         todo!();
         Ok(())
+    }
+
+    pub fn reset_singleton(&self) {
+        // let _ = SINGLETON_RUNTIME.take();
     }
 }
 
@@ -154,26 +204,47 @@ impl RuntimeBuilder {
         )
         .with_context(|| "Failed to build the Wasmtime Engine")?;
 
-        SINGLETON_RUNTIME
-            .set(Runtime {
-                vcpus: self.vcpus.unwrap_or(1),
-                memory_size: self.memory_size.unwrap_or(1024 * 1024 * 10),
-                max_allocatable_functions: self.max_functions.unwrap_or(100),
-                currently_allocated_functions: Arc::new(AtomicUsize::new(0)),
-                wasm_engine: Arc::new(engine),
-                users: Arc::new(RwLock::new(HashMap::new())),
-            })
-            .map_err(|_| anyhow::anyhow!("Failed to Initialize the Runtime Singleton"))?;
+        // Check if is already setted
+        Ok(SINGLETON_RUNTIME.get_or_init(|| Runtime {
+            vcpus: self.vcpus.unwrap_or(1),
+            memory_size: self.memory_size.unwrap_or(1024 * 1024 * 10),
+            max_allocatable_functions: self.max_functions.unwrap_or(100),
+            currently_allocated_functions: Arc::new(AtomicUsize::new(0)),
+            wasm_engine: Arc::new(engine),
+            users: Arc::new(RwLock::new(HashMap::new())),
+        }))
 
-        SINGLETON_RUNTIME
-            .get()
-            .with_context(|| "The Runtime was not initialized")
+        // SINGLETON_RUNTIME
+        //     .set(Runtime {
+        //         vcpus: self.vcpus.unwrap_or(1),
+        //         memory_size: self.memory_size.unwrap_or(1024 * 1024 * 10),
+        //         max_allocatable_functions: self.max_functions.unwrap_or(100),
+        //         currently_allocated_functions: Arc::new(AtomicUsize::new(0)),
+        //         wasm_engine: Arc::new(engine),
+        //         users: Arc::new(RwLock::new(HashMap::new())),
+        //     })
+        //     .map_err(|_| anyhow::anyhow!("Failed to Initialize the Runtime Singleton"))?;
+
+        // SINGLETON_RUNTIME
+        //     .get()
+        //     .with_context(|| "The Runtime was not initialized")
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::fs::File;
+    use std::io::BufReader;
+    use std::io::Read;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    // NOTE: Directory where the wasm functions are located
+    static WASM_RESOURCES: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/lamda_tests/wasm_compiled"
+    );
 
     /// Test User registration and deletion
     #[tokio::test]
@@ -185,7 +256,51 @@ mod test {
         assert!(!user_id_1.is_empty());
         assert!(!user_id_2.is_empty());
         assert!(!user_id_3.is_empty());
-        rt.remove_user(user_id_1).await.unwrap();
+        rt.remove_user(&user_id_1).await;
         assert_eq!(rt.users.read().await.len(), 2);
+    }
+
+    /// Test Module Registration and Deletion
+    #[tokio::test]
+    async fn module_registration_and_deletion() {
+        let rt = Runtime::new().build().unwrap();
+
+        // User Id's
+        let user_id_one = rt.register_user().await.unwrap();
+        let user_id_two = rt.register_user().await.unwrap();
+
+        // Preload Modules as Bytes
+        let wasm_mod_1_path =
+            PathBuf::from(&format!("{}/{}", WASM_RESOURCES, "stop_infinite_loop.wasm"));
+        let wasm_mod_2_path = PathBuf::from(&format!(
+            "{}/{}",
+            WASM_RESOURCES, "multiple_function_exec.wasm"
+        ));
+        let wasm_mod_3_path = PathBuf::from(&format!(
+            "{}/{}",
+            WASM_RESOURCES, "exec_rust_lambda_function.wasm"
+        ));
+
+        let wasm_mod_1 = load_from_file(&wasm_mod_1_path);
+        let wasm_mod_2 = load_from_file(&wasm_mod_2_path);
+        let wasm_mod_3 = load_from_file(&wasm_mod_3_path);
+
+        // Register some modules
+        // User 1
+        let module_id_1_1 = rt.register_module(&user_id_one, &wasm_mod_1).await.unwrap();
+        let module_id_1_2 = rt.register_module(&user_id_one, &wasm_mod_1).await.unwrap();
+        // User 2
+        let module_id_2_3 = rt.register_module(&user_id_two, &wasm_mod_3).await.unwrap();
+
+        dbg!(module_id_1_2);
+        dbg!(&rt.users);
+    }
+
+    fn load_from_file(path: &Path) -> Vec<u8> {
+        let file = File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer).unwrap();
+        buffer
     }
 }
