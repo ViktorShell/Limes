@@ -6,7 +6,7 @@ use std::{
 use crate::runtime::lambda::*;
 use anyhow::Context;
 use crc32fast::Hasher;
-use tokio::sync::{RwLock, RwLockReadGuard};
+use tokio::sync::RwLock;
 use wasmtime::{component::Component, Config, Engine};
 
 pub type UserId = String;
@@ -63,12 +63,8 @@ impl std::fmt::Debug for ModuleHandler {
     }
 }
 
-// NOTE: Used to initialized only one time the Runtime
-static SINGLETON_RUNTIME: RwLock<Option<Runtime>> = RwLock::const_new(None);
-
 #[derive(Debug)]
 pub struct Runtime {
-    vcpus: usize,
     memory_size: usize,
     max_allocatable_functions: usize,
     currently_allocated_functions: Arc<AtomicUsize>,
@@ -80,7 +76,6 @@ impl Runtime {
     #[allow(warnings)]
     pub fn new() -> RuntimeBuilder {
         RuntimeBuilder {
-            vcpus: Some(1),
             memory_size: Some(1024 * 1024 * 10),
             max_functions: Some(100),
         }
@@ -166,31 +161,14 @@ impl Runtime {
         todo!();
         Ok(())
     }
-
-    pub async fn get_instance() -> anyhow::Result<RwLockReadGuard<'static, Runtime>> {
-        let guard = SINGLETON_RUNTIME.read().await;
-        RwLockReadGuard::try_map(guard, |opt| opt.as_ref())
-            .map_err(|_| anyhow::anyhow!("Runtime: Runtime not initialized"))
-    }
-
-    pub async fn reset() {
-        let mut guard = SINGLETON_RUNTIME.write().await;
-        *guard = None;
-    }
 }
 
 pub struct RuntimeBuilder {
-    vcpus: Option<usize>,
     memory_size: Option<usize>,
     max_functions: Option<usize>,
 }
 
 impl RuntimeBuilder {
-    pub fn set_vcpus(&mut self, vcpus: usize) -> &mut Self {
-        self.vcpus = Some(vcpus);
-        self
-    }
-
     pub fn set_memory_size(&mut self, memory_size: usize) -> &mut Self {
         self.memory_size = Some(memory_size);
         self
@@ -202,7 +180,7 @@ impl RuntimeBuilder {
     }
 
     /// Will build the wasmtime engine and configure the Runtime
-    pub async fn build(&self) -> anyhow::Result<()> {
+    pub async fn build(&self) -> anyhow::Result<Arc<Runtime>> {
         let engine = Engine::new(
             Config::new()
                 .async_support(true)
@@ -211,23 +189,14 @@ impl RuntimeBuilder {
         )
         .with_context(|| "Runtime: Failed to build the Wasmtime Engine")?;
 
-        if let Some(_) = *SINGLETON_RUNTIME.read().await {
-            return Err(anyhow::anyhow!("Runtime: Runtime already initialized"));
-        }
-
-        let mut guard = SINGLETON_RUNTIME.write().await;
-
         // Check if is already setted
-        *guard = Some(Runtime {
-            vcpus: self.vcpus.unwrap_or(1),
+        Ok(Arc::new(Runtime {
             memory_size: self.memory_size.unwrap_or(1024 * 1024 * 10),
             max_allocatable_functions: self.max_functions.unwrap_or(100),
             currently_allocated_functions: Arc::new(AtomicUsize::new(0)),
             wasm_engine: Arc::new(engine),
             users: Arc::new(RwLock::new(HashMap::new())),
-        });
-
-        Ok(())
+        }))
     }
 }
 
@@ -249,8 +218,7 @@ mod test {
     /// Test User registration and deletion
     #[tokio::test]
     async fn user_registartion_deletion() {
-        Runtime::new().build().await.unwrap();
-        let rt = Runtime::get_instance().await.unwrap();
+        let rt = Runtime::new().build().await.unwrap();
 
         let user_id_1 = rt.register_user().await.unwrap();
         let user_id_2 = rt.register_user().await.unwrap();
@@ -265,9 +233,7 @@ mod test {
     /// Test Module Registration and Deletion
     #[tokio::test]
     async fn module_registration_and_deletion() {
-        Runtime::reset().await;
-        Runtime::new().build().await.unwrap();
-        let rt = Runtime::get_instance().await.unwrap();
+        let rt = Runtime::new().build().await.unwrap();
 
         // User Id's
         let user_id_one = rt.register_user().await.unwrap();
