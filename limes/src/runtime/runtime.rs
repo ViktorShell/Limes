@@ -1,16 +1,13 @@
 use std::{
     collections::HashMap,
-    sync::{atomic::AtomicUsize, Arc, OnceLock},
+    sync::{atomic::AtomicUsize, Arc},
 };
 
 use crate::runtime::lambda::*;
 use anyhow::Context;
 use crc32fast::Hasher;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, RwLockReadGuard};
 use wasmtime::{component::Component, Config, Engine};
-
-// NOTE: Used to initialized only one time the Runtime
-static SINGLETON_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 pub type UserId = String;
 pub type ModuleId = u32;
@@ -65,6 +62,9 @@ impl std::fmt::Debug for ModuleHandler {
         write!(f, "ModuleHandler")
     }
 }
+
+// NOTE: Used to initialized only one time the Runtime
+static SINGLETON_RUNTIME: RwLock<Option<Runtime>> = RwLock::const_new(None);
 
 #[derive(Debug)]
 pub struct Runtime {
@@ -167,8 +167,15 @@ impl Runtime {
         Ok(())
     }
 
-    pub fn reset_singleton(&self) {
-        // let _ = SINGLETON_RUNTIME.take();
+    pub async fn get_instance() -> anyhow::Result<RwLockReadGuard<'static, Runtime>> {
+        let guard = SINGLETON_RUNTIME.read().await;
+        RwLockReadGuard::try_map(guard, |opt| opt.as_ref())
+            .map_err(|_| anyhow::anyhow!("Runtime: Runtime not initialized"))
+    }
+
+    pub async fn reset() {
+        let mut guard = SINGLETON_RUNTIME.write().await;
+        *guard = None;
     }
 }
 
@@ -195,39 +202,32 @@ impl RuntimeBuilder {
     }
 
     /// Will build the wasmtime engine and configure the Runtime
-    pub fn build(&self) -> anyhow::Result<&'static Runtime> {
+    pub async fn build(&self) -> anyhow::Result<()> {
         let engine = Engine::new(
             Config::new()
                 .async_support(true)
                 .wasm_component_model(true)
                 .cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize),
         )
-        .with_context(|| "Failed to build the Wasmtime Engine")?;
+        .with_context(|| "Runtime: Failed to build the Wasmtime Engine")?;
+
+        if let Some(_) = *SINGLETON_RUNTIME.read().await {
+            return Err(anyhow::anyhow!("Runtime: Runtime already initialized"));
+        }
+
+        let mut guard = SINGLETON_RUNTIME.write().await;
 
         // Check if is already setted
-        Ok(SINGLETON_RUNTIME.get_or_init(|| Runtime {
+        *guard = Some(Runtime {
             vcpus: self.vcpus.unwrap_or(1),
             memory_size: self.memory_size.unwrap_or(1024 * 1024 * 10),
             max_allocatable_functions: self.max_functions.unwrap_or(100),
             currently_allocated_functions: Arc::new(AtomicUsize::new(0)),
             wasm_engine: Arc::new(engine),
             users: Arc::new(RwLock::new(HashMap::new())),
-        }))
+        });
 
-        // SINGLETON_RUNTIME
-        //     .set(Runtime {
-        //         vcpus: self.vcpus.unwrap_or(1),
-        //         memory_size: self.memory_size.unwrap_or(1024 * 1024 * 10),
-        //         max_allocatable_functions: self.max_functions.unwrap_or(100),
-        //         currently_allocated_functions: Arc::new(AtomicUsize::new(0)),
-        //         wasm_engine: Arc::new(engine),
-        //         users: Arc::new(RwLock::new(HashMap::new())),
-        //     })
-        //     .map_err(|_| anyhow::anyhow!("Failed to Initialize the Runtime Singleton"))?;
-
-        // SINGLETON_RUNTIME
-        //     .get()
-        //     .with_context(|| "The Runtime was not initialized")
+        Ok(())
     }
 }
 
@@ -249,7 +249,9 @@ mod test {
     /// Test User registration and deletion
     #[tokio::test]
     async fn user_registartion_deletion() {
-        let rt = Runtime::new().build().unwrap();
+        Runtime::new().build().await.unwrap();
+        let rt = Runtime::get_instance().await.unwrap();
+
         let user_id_1 = rt.register_user().await.unwrap();
         let user_id_2 = rt.register_user().await.unwrap();
         let user_id_3 = rt.register_user().await.unwrap();
@@ -263,7 +265,9 @@ mod test {
     /// Test Module Registration and Deletion
     #[tokio::test]
     async fn module_registration_and_deletion() {
-        let rt = Runtime::new().build().unwrap();
+        Runtime::reset().await;
+        Runtime::new().build().await.unwrap();
+        let rt = Runtime::get_instance().await.unwrap();
 
         // User Id's
         let user_id_one = rt.register_user().await.unwrap();
