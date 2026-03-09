@@ -20,8 +20,6 @@ use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
 
 use thiserror::Error;
 
-pub type FunctionId = String;
-
 #[derive(PartialEq, PartialOrd, Debug)]
 pub enum FunctionStatus {
     Ready,
@@ -32,8 +30,20 @@ pub enum FunctionStatus {
 /// The Function Handler have the role to create and handle the lambda functions
 #[derive(Debug)]
 pub struct FunctionHandler {
-    lambda: Lambda,
-    status: FunctionStatus,
+    pub lambda: Lambda,
+    pub status: FunctionStatus,
+}
+
+impl FunctionHandler {
+    pub async fn new(
+        component: Arc<Component>,
+        memory_size: usize,
+        tap_ip: Ipv4Addr,
+    ) -> anyhow::Result<Self> {
+        let lambda = Lambda::new(component, memory_size, tap_ip).await?;
+        let status = FunctionStatus::Ready;
+        Ok(Self { lambda, status })
+    }
 }
 
 pub struct LambdaState {
