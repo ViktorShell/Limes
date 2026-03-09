@@ -284,6 +284,7 @@ impl RuntimeBuilder {
             Config::new()
                 .async_support(true)
                 .wasm_component_model(true)
+                .epoch_interruption(true)
                 .cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize),
         )
         .with_context(|| "Runtime: Failed to build the Wasmtime Engine")?;
@@ -344,12 +345,23 @@ mod test {
 
         // Register some modules
         // User 1
-        let module_id_1_1 = rt.register_module(&user_id_one, &wasm_mod_1).await.unwrap();
-        let module_id_1_2 = rt.register_module(&user_id_one, &wasm_mod_1).await.unwrap();
+        let module_id_1_1 = rt
+            .register_module(&user_id_one, &wasm_mod_1)
+            .await
+            .unwrap_or(0);
+        let module_id_1_2 = rt
+            .register_module(&user_id_one, &wasm_mod_2)
+            .await
+            .unwrap_or(0);
         // User 2
-        let module_id_2_3 = rt.register_module(&user_id_two, &wasm_mod_3).await.unwrap();
+        let module_id_2_3 = rt
+            .register_module(&user_id_two, &wasm_mod_3)
+            .await
+            .unwrap_or(0);
 
-        // FIX: TO FINISH
+        assert!(module_id_1_1 != 0);
+        assert!(module_id_1_2 != 0);
+        assert!(module_id_2_3 != 0);
     }
 
     #[tokio::test]
@@ -431,30 +443,30 @@ mod test {
 
         // Exec functions in parallel
         // 1. Spawna a task to stop the infinite loop function
-        // tokio::spawn({
-        //     let rt_clone = rt.clone();
-        //     let uid = user_two_id.clone();
-        //     let fid = user_two_infinite_loop_func.clone();
-        //
-        //     async move {
-        //         // Diamo il tempo alla funzione Wasm di iniziare l'esecuzione
-        //         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        //         rt_clone.stop_function(&uid, &fid).await
-        //     }
-        // });
+        tokio::spawn({
+            let rt_clone = rt.clone();
+            let uid = user_two_id.clone();
+            let fid = user_two_infinite_loop_func.clone();
+
+            async move {
+                // Diamo il tempo alla funzione Wasm di iniziare l'esecuzione
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                rt_clone.stop_function(&uid, &fid).await
+            }
+        });
 
         // Join on parallel execution
-        let (user_one_op_r, user_one_sort_r, user_two_op_r /*user_two_inf_r*/) = tokio::join!(
+        let (user_one_op_r, user_one_sort_r, user_two_op_r, user_two_inf_r) = tokio::join!(
             rt.exec_function(&user_one_id, &user_one_op_a_b_func_id, "15 + 16"),
             rt.exec_function(&user_one_id, &user_one_sorter_func_id, "f,e,c,d,a,x"),
             rt.exec_function(&user_two_id, &user_two_op_a_b_func_id, "15 / 5"),
-            // rt.exec_function(&user_two_id, &user_two_infinite_loop_func, "")
+            rt.exec_function(&user_two_id, &user_two_infinite_loop_func, "")
         );
 
         assert_eq!(user_one_op_r.unwrap(), "31");
         assert_eq!(user_one_sort_r.unwrap(), "[a,c,d,e,f,x]");
         assert_eq!(user_two_op_r.unwrap(), "3");
-        // assert!(user_two_inf_r.is_err());
+        assert!(user_two_inf_r.is_err());
     }
 
     fn load_from_file(wasm_name: &str) -> Vec<u8> {

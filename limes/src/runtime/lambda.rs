@@ -142,11 +142,11 @@ impl Lambda {
 
     pub async fn stop(&self) -> anyhow::Result<()> {
         let engine = self.component.engine();
-        // FIX: Must remove
-        //if self.stop.load(Ordering::Relaxed) {
-        //    LambdaError::FunctionNotRunning;
-        //}
-        self.stop.store(true, Ordering::Relaxed);
+        // FIX: Check
+        if self.stop.load(Ordering::SeqCst) {
+            return Err(anyhow::anyhow!(LambdaError::FunctionNotRunning));
+        }
+        self.stop.store(true, Ordering::SeqCst);
         engine.increment_epoch();
         Ok(())
     }
@@ -172,7 +172,7 @@ impl Lambda {
     fn init_interrupt_callback(&self, store: &mut Store<LambdaState>) {
         let stop = self.stop.clone();
         store.epoch_deadline_callback(move |_| {
-            if !stop.load(Ordering::Relaxed) {
+            if !stop.load(Ordering::SeqCst) {
                 return Ok(wasmtime::UpdateDeadline::Yield(1));
             }
             Err(anyhow::anyhow!("ForceStop"))
