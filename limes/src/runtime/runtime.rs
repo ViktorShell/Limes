@@ -3,7 +3,7 @@ use std::{
     net::Ipv4Addr,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
 };
 
@@ -82,6 +82,8 @@ pub struct Runtime {
     wasm_engine: Arc<Engine>,
     users: Arc<RwLock<HashMap<UserId, UserModules>>>,
 }
+
+static RUNTIME_REF: OnceLock<Arc<Runtime>> = OnceLock::new();
 
 impl Runtime {
     pub fn new() -> RuntimeBuilder {
@@ -260,6 +262,11 @@ impl Runtime {
         let func = functions?;
         func.lambda.stop().await
     }
+
+    pub fn get_runtime_ref() -> anyhow::Result<Arc<Runtime>> {
+        let rt_ref = RUNTIME_REF.get().context("Runtime: Not initialized")?;
+        Ok(rt_ref.clone())
+    }
 }
 
 pub struct RuntimeBuilder {
@@ -290,13 +297,18 @@ impl RuntimeBuilder {
         .with_context(|| "Runtime: Failed to build the Wasmtime Engine")?;
 
         // Check if is already setted
-        Ok(Arc::new(Runtime {
+        let runtime_arc = Arc::new(Runtime {
             memory_size: self.memory_size.unwrap_or(1024 * 1024 * 10),
             max_allocatable_functions: self.max_functions.unwrap_or(100),
             currently_allocated_functions: Arc::new(AtomicUsize::new(0)),
             wasm_engine: Arc::new(engine),
             users: Arc::new(RwLock::new(HashMap::new())),
-        }))
+        });
+
+        // Needed for self reference for the Agents
+        let _ = RUNTIME_REF.set(runtime_arc.clone());
+
+        Ok(runtime_arc)
     }
 }
 

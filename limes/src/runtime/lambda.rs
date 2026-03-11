@@ -9,16 +9,15 @@ use std::{
 };
 
 use anyhow::Context;
+use thiserror::Error;
+
 use wasmtime::Store;
 use wasmtime::StoreLimits;
 use wasmtime::{
     component::{Component, Instance, Linker, ResourceTable, TypedFunc},
     StoreLimitsBuilder,
 };
-//use wasmtime_wasi::{DirPerms, FilePerms};
 use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
-
-use thiserror::Error;
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub enum FunctionStatus {
@@ -142,7 +141,6 @@ impl Lambda {
 
     pub async fn stop(&self) -> anyhow::Result<()> {
         let engine = self.component.engine();
-        // FIX: Check
         if self.stop.load(Ordering::SeqCst) {
             return Err(anyhow::anyhow!(LambdaError::FunctionNotRunning));
         }
