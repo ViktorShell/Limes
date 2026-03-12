@@ -31,6 +31,11 @@ pub enum FunctionStatus {
 pub struct FunctionHandler {
     pub lambda: Lambda,
     pub status: FunctionStatus,
+    pub user_id: String,
+    pub function_id: String,
+    pub function_name: String,
+    pub function_input_description: String,
+    pub description: String,
 }
 
 impl FunctionHandler {
@@ -38,10 +43,23 @@ impl FunctionHandler {
         component: Arc<Component>,
         memory_size: usize,
         tap_ip: Ipv4Addr,
+        function_name: String,
+        function_input_description: String,
+        description: String,
+        user_id: String,
+        function_id: String,
     ) -> anyhow::Result<Self> {
         let lambda = Lambda::new(component, memory_size, tap_ip).await?;
         let status = FunctionStatus::Ready;
-        Ok(Self { lambda, status })
+        Ok(Self {
+            lambda,
+            status,
+            function_name,
+            function_input_description,
+            description,
+            user_id,
+            function_id,
+        })
     }
 }
 
@@ -138,6 +156,59 @@ impl Lambda {
         // let _ = func.post_return_async(&mut store).await;
         Ok(result)
     }
+
+    // pub async fn async_run_tusk(
+    //     &self,
+    //     args: &str,
+    // ) -> Box<
+    //     dyn Fn(
+    //         String,
+    //     )
+    //         -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send> + Sync + Send>,
+    // > {
+    //     // Init the linker with wasi
+    //     let engine = self.component.engine();
+    //     let mut linker = Linker::<LambdaState>::new(engine);
+    //     wasmtime_wasi::add_to_linker_async(&mut linker)?;
+    //
+    //     // Build the context for function execution
+    //     let wasi_ctx = self.get_wasictx();
+    //     let mut store = self.get_store(wasi_ctx);
+    //
+    //     // Interrupt mechanism
+    //     self.init_interrupt_callback(&mut store);
+    //
+    //     // Get the function Instance from Component
+    //     let instance = linker
+    //         .instantiate_async(&mut store, &self.component)
+    //         .await
+    //         .with_context(|| "Lambda Error: Unable to load the instance of the component")?;
+    //
+    //     // Retriev the function
+    //     let func = self.get_main_func(&instance, &mut store)?;
+    //
+    //     // Get the function Instance from Component
+    //     let instance = linker
+    //         .instantiate_async(&mut store, &self.component)
+    //         .await
+    //         .with_context(|| "Lambda Error: Unable to load the instance of the component")?;
+    //
+    //     let result = Box::new(|args: String| {
+    //         Box::pin(async move {
+    //             let result = func.call_async(&mut store, (&args,)).await.map_err(|_| {
+    //                 match self.stop.load(Ordering::Relaxed) {
+    //                     true => LambdaError::ForceStop,
+    //                     false => LambdaError::FunctionExecError,
+    //                 }
+    //             });
+    //             result
+    //                 .map(|(s,)| s)
+    //                 .context("Agent: Failed to execute the function")
+    //         })
+    //     });
+    //
+    //     result
+    // }
 
     pub async fn stop(&self) -> anyhow::Result<()> {
         let engine = self.component.engine();

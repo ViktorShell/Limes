@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use limes::runtime::runtime;
+use limes::runtime::Runtime;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::net::Ipv4Addr;
@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
 
     let wasm_bytes = load_bytes(&args.file_path)?;
 
-    let rt = runtime::Runtime::new()
+    let rt = Runtime::new()
         .set_memory_size(args.total_memory)
         .set_max_functions(args.max_functions)
         .build()
@@ -46,6 +46,8 @@ async fn main() -> Result<()> {
             &module_id,
             1024 * 1024 * 2,
             Ipv4Addr::new(127, 0, 0, 1),
+            "func".to_string(),
+            "no description".to_string(),
         )
         .await
         .context("Failed to load the function")?;
