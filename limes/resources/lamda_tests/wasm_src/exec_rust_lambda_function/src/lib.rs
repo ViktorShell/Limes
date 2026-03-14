@@ -2,11 +2,16 @@ wit_bindgen::generate!({
     inline: r"
         package component:run;
 
+        interface limes-api {
+            invoke-agent: func(args: string) -> string;
+        }
+
         interface run {
             run: func(args: string) -> string;
         }
 
         world runnable {
+            import limes-api;
             export run;
         }
     "

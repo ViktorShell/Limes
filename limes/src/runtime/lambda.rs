@@ -11,13 +11,32 @@ use std::{
 use anyhow::Context;
 use thiserror::Error;
 
+use crate::agents::LimesAgent;
+use crate::runtime::component::run::limes_api;
 use wasmtime::Store;
 use wasmtime::StoreLimits;
 use wasmtime::{
-    component::{Component, Instance, Linker, ResourceTable, TypedFunc},
+    component::{bindgen, Component, Instance, Linker, ResourceTable, TypedFunc},
     StoreLimitsBuilder,
 };
 use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
+
+// NOTE: Foundamental for the Agent invokation
+bindgen!({
+    inline: r"
+        package component:run;
+        interface limes-api {
+            invoke-agent: func(args: string) -> string;
+        }
+        world runnable {
+            import limes-api;
+            export run: interface {
+                run: func(args: string) -> string;
+            }
+        }
+    ",
+    async: true,
+});
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub enum FunctionStatus {
@@ -49,7 +68,7 @@ impl FunctionHandler {
         user_id: String,
         function_id: String,
     ) -> anyhow::Result<Self> {
-        let lambda = Lambda::new(component, memory_size, tap_ip).await?;
+        let lambda = Lambda::new(component, memory_size, tap_ip, user_id.clone()).await?;
         let status = FunctionStatus::Ready;
         Ok(Self {
             lambda,
@@ -96,6 +115,34 @@ pub struct Lambda {
     memory_size: usize,
     tap_ip: Ipv4Addr,
     stop: Arc<AtomicBool>,
+    user_id: String,
+}
+
+// NOTE: Used to invoke the LimesAgent
+impl limes_api::Host for Lambda {
+    async fn invoke_agent(&mut self, args: String) -> String {
+        let agent = LimesAgent::new_agent(
+            "http://127.0.0.1:11434",
+            "llama3.2:3b",
+            self.user_id.clone(),
+        )
+        .await;
+
+        let agent = if let Err(_) = agent {
+            return "AgentError: There was an error on the Agent initialization".to_string();
+        } else {
+            agent.unwrap()
+        };
+
+        let parsed = agent.invoke_agent(args).await;
+        let answer = if let Err(_) = parsed {
+            return "AgentError: There was an error when executing the Agent".to_string();
+        } else {
+            parsed.unwrap()
+        };
+
+        answer
+    }
 }
 
 impl Lambda {
@@ -103,6 +150,7 @@ impl Lambda {
         component: Arc<Component>,
         memory_size: usize,
         tap_ip: Ipv4Addr,
+        user_id: String,
     ) -> anyhow::Result<Lambda> {
         if memory_size < 1024 * 1024 * 2 {
             return Err(anyhow::anyhow!(
@@ -116,6 +164,7 @@ impl Lambda {
             memory_size,
             tap_ip,
             stop,
+            user_id,
         })
     }
 
@@ -156,59 +205,6 @@ impl Lambda {
         // let _ = func.post_return_async(&mut store).await;
         Ok(result)
     }
-
-    // pub async fn async_run_tusk(
-    //     &self,
-    //     args: &str,
-    // ) -> Box<
-    //     dyn Fn(
-    //         String,
-    //     )
-    //         -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send> + Sync + Send>,
-    // > {
-    //     // Init the linker with wasi
-    //     let engine = self.component.engine();
-    //     let mut linker = Linker::<LambdaState>::new(engine);
-    //     wasmtime_wasi::add_to_linker_async(&mut linker)?;
-    //
-    //     // Build the context for function execution
-    //     let wasi_ctx = self.get_wasictx();
-    //     let mut store = self.get_store(wasi_ctx);
-    //
-    //     // Interrupt mechanism
-    //     self.init_interrupt_callback(&mut store);
-    //
-    //     // Get the function Instance from Component
-    //     let instance = linker
-    //         .instantiate_async(&mut store, &self.component)
-    //         .await
-    //         .with_context(|| "Lambda Error: Unable to load the instance of the component")?;
-    //
-    //     // Retriev the function
-    //     let func = self.get_main_func(&instance, &mut store)?;
-    //
-    //     // Get the function Instance from Component
-    //     let instance = linker
-    //         .instantiate_async(&mut store, &self.component)
-    //         .await
-    //         .with_context(|| "Lambda Error: Unable to load the instance of the component")?;
-    //
-    //     let result = Box::new(|args: String| {
-    //         Box::pin(async move {
-    //             let result = func.call_async(&mut store, (&args,)).await.map_err(|_| {
-    //                 match self.stop.load(Ordering::Relaxed) {
-    //                     true => LambdaError::ForceStop,
-    //                     false => LambdaError::FunctionExecError,
-    //                 }
-    //             });
-    //             result
-    //                 .map(|(s,)| s)
-    //                 .context("Agent: Failed to execute the function")
-    //         })
-    //     });
-    //
-    //     result
-    // }
 
     pub async fn stop(&self) -> anyhow::Result<()> {
         let engine = self.component.engine();
@@ -466,7 +462,7 @@ mod test {
     ) -> Lambda {
         let wasm_function_path = PathBuf::from(&format!("{}/{}", WASM_RESOURCES, wasm_file));
         let component = Arc::new(load_component(engine, &wasm_function_path));
-        Lambda::new(component.clone(), memory_size, tap_ip)
+        Lambda::new(component.clone(), memory_size, tap_ip, "".to_string())
             .await
             .unwrap()
     }

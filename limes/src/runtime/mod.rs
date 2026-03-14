@@ -352,6 +352,7 @@ mod test {
                 1024 * 1024 * 2,
                 tap_ip,
                 "sum".to_string(),
+                "some input".to_string(),
                 "execute the sum between two numbers a and b".to_string(),
             )
             .await
@@ -364,7 +365,8 @@ mod test {
                 1024 * 1024 * 2,
                 tap_ip,
                 "sort".to_string(),
-                "sort a set of item in the input form lik i1,i2,i3,i4".to_string(),
+                "some input".to_string(),
+                "sort a set of item in the input form like i1,i2,i3,i4".to_string(),
             )
             .await
             .unwrap();
@@ -377,6 +379,7 @@ mod test {
                 1024 * 1024 * 2,
                 tap_ip,
                 "sum".to_string(),
+                "some input".to_string(),
                 "execute the sum between two numbers a and b".to_string(),
             )
             .await
@@ -389,6 +392,7 @@ mod test {
                 1024 * 1024 * 2,
                 tap_ip,
                 "loop".to_string(),
+                "some input".to_string(),
                 "is an infinite loop, used for the testing".to_string(),
             )
             .await
