@@ -1,4 +1,5 @@
 use anyhow::Context;
+use atoi::atoi;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -7,14 +8,10 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes;
+use clap::Parser;
+use limes::runtime::Runtime;
 use serde::{Deserialize, Serialize};
-use std::{net::Ipv4Addr, sync::Arc};
-// Assumi che i tipi del tuo modulo siano importati qui
-use limes::runtime::{
-    runtime_builder::RuntimeBuilder,
-    types::{FunctionId, ModuleId, UserId},
-    Runtime,
-};
+use std::{net::Ipv4Addr, str::FromStr, sync::Arc};
 
 // --- DTOs (Data Transfer Objects) ---
 
@@ -115,11 +112,37 @@ async fn exec_function_handler(
 
 // --- Setup Principale del Server ---
 
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Args {
+    /// The ip address in the form of xxx.xxx.xxx.xxx
+    #[arg(short, long)]
+    ip: String,
+    /// The port number in the form of xxxx
+    #[arg(short, long)]
+    port: String,
+}
+
+fn check_args(args: &Args) -> anyhow::Result<(Ipv4Addr, u32)> {
+    let ip_addr = Ipv4Addr::from_str(&args.ip)
+        .with_context(|| "There was an error with the given IP address")?;
+
+    let port = atoi::<u32>(args.port.as_bytes())
+        .with_context(|| "The inserted port is not a valid number")?;
+
+    let port = if port > 1 && port < 65536 {
+        port
+    } else {
+        return Err(anyhow::anyhow!("The inserted port is out of range"));
+    };
+
+    Ok((ip_addr, port))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 1. Inizializza il tuo Runtime
-    // (Presumo che il tuo RuntimeBuilder abbia un metodo .build() che ritorna il Runtime)
-    // let runtime = Runtime::new().build().await?;
+    let args = Args::parse();
+    let (ip_address, port) = check_args(&args)?;
 
     // Per questo esempio simuliamo di avere già l'istanza:
     let _ = Runtime::new()
@@ -148,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(runtime); // L'istanza clonata dell'Arc viene passata qui
 
     // 3. Avvia il server
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    let listener = tokio::net::TcpListener::bind(&format!("{}:{}", ip_address, port)).await?;
     println!("Limes Server started on {}", listener.local_addr()?);
 
     axum::serve(listener, app).await?;
