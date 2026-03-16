@@ -106,7 +106,10 @@ async fn exec_function_handler(
 ) -> Result<Json<ExecResponse>, (StatusCode, String)> {
     match runtime.exec_function(&user_id, &function_id, &body).await {
         Ok(result) => Ok(Json(ExecResponse { result })),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        Err(e) => {
+            eprintln!("{}", e);
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        }
     }
 }
 

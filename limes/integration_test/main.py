@@ -1,11 +1,10 @@
 import requests
 import sys
-import os
-from typing import List, Dict
+from typing import Dict
 
 
 # ==========================================
-# BLOCCO 1: Client API (Invariato)
+#  Client API
 # ==========================================
 class RuntimeAPIClient:
     def __init__(self, base_url: str):
@@ -24,7 +23,10 @@ class RuntimeAPIClient:
         res = requests.post(
             f"{self.base_url}/users/{user_id}/modules",
             data=wasm_bytes,
-            headers={"Content-Type": "application/octet-stream"},
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(len(wasm_bytes)),
+            },
         )
         res.raise_for_status()
         return res.json()["module_id"]
@@ -47,109 +49,71 @@ class RuntimeAPIClient:
         return res.json()["result"]
 
 
-# ==========================================
-# BLOCCO 2: Logica Multi-File, Multi-Utente
-# ==========================================
-def run_multi_test(client: RuntimeAPIClient, wasm_paths: List[str]):
-    print("🚀 Inizio test: Utenti Multipli, MODULI Multipli, Funzioni e Input...")
-
-    # --- 1. Pre-caricamento di TUTTI i file WASM ---
-    # Facciamo questo prima di creare utenti per evitare di sporcare il server se manca un file
-    wasm_modules = {}
-    print("\n📂 Caricamento file WASM locali...")
-    for path in wasm_paths:
-        try:
-            with open(path, "rb") as f:
-                wasm_modules[path] = f.read()
-            filename = os.path.basename(path)
-            print(
-                f"   ✅ Caricato in RAM: {filename} ({len(wasm_modules[path])} bytes)"
-            )
-        except FileNotFoundError:
-            print(f"❌ Errore fatale: File WASM non trovato in '{path}'")
-            sys.exit(1)
-
-    if not wasm_modules:
-        print("⚠️ Nessun file WASM fornito. Test interrotto.")
-        return
-
-    # --- Configurazione del Test ---
-    NUM_USERS = 2
-    FUNCTIONS_PER_MODULE = 2  # Quante funzioni istanziare per OGNI modulo WASM
-    INPUTS_TO_TEST = ["Input Veloce", "Input Complesso"]
-
-    active_users = []
-
+def load_wasm_files(wasm_path: str):
+    print("-> Loading WASM files")
     try:
-        # --- Ciclo Utenti ---
-        for u_idx in range(NUM_USERS):
-            user_id = client.create_user()
-            active_users.append(user_id)
-            print(f"\n👤 [Utente {u_idx + 1}/{NUM_USERS}] Creato: {user_id}")
-
-            # --- Ciclo Moduli WASM ---
-            for path, wasm_bytes in wasm_modules.items():
-                filename = os.path.basename(path)
-                module_id = client.register_module(user_id, wasm_bytes)
-                print(f"   📦 Modulo '{filename}' registrato con ID: {module_id}")
-
-                # --- Ciclo Funzioni per questo Modulo ---
-                for f_idx in range(FUNCTIONS_PER_MODULE):
-                    func_config = {
-                        "function_memory_size": 1024 * 1024 * 2,  # 2 MB
-                        "tap_ip": f"192.168.{u_idx}.{f_idx + 1}",  # IP simulato
-                        "function_name": f"func_{filename}_{f_idx}",
-                        "function_input_description": "Input test",
-                        "description": f"Istanza {f_idx} del modulo {filename}",
-                    }
-
-                    func_id = client.load_function(user_id, module_id, func_config)
-                    print(f"      ⚙️ Funzione {f_idx + 1} istanziata: {func_id}")
-
-                    # --- Ciclo Input per questa Funzione ---
-                    for inp_idx, input_data in enumerate(INPUTS_TO_TEST):
-                        payload = f"[{func_config['function_name']}] {input_data}"
-                        try:
-                            result = client.exec_function(user_id, func_id, payload)
-                            print(
-                                f"         ✅ Exec input {inp_idx + 1}: {result.strip()}"
-                            )
-                        except requests.exceptions.HTTPError as e:
-                            print(f"         ❌ Exec input {inp_idx + 1} FALLITO: {e}")
-
-    finally:
-        # ==========================================
-        # BLOCCO 3: Pulizia Finale
-        # ==========================================
-        print("\n🧹 Avvio pulizia delle risorse...")
-        for user_id in active_users:
-            success = client.remove_user(user_id)
-            status = "✅" if success else "❌"
-            print(f"   {status} Rimozione utente {user_id}")
-
-    print("\n🎉 Test completato!")
+        with open(wasm_path, "rb") as f:
+            wasm_bytes = f.read()
+            print(f"\n -> Loaded file: {wasm_path}")
+    except FileNotFoundError:
+        print(f"-> File not found: {wasm_path}")
+        sys.exit(1)
+    return wasm_bytes
 
 
 # ==========================================
-# PUNTO DI INGRESSO
+# Main Test
 # ==========================================
 if __name__ == "__main__":
-    BASE_URL = "http://localhost:3000"
-
-    # Inserisci qui la lista di tutti i file WASM che vuoi testare
-    # Puoi aggiungere quanti percorsi vuoi.
-    LISTA_WASM = [
-        "percorso/al/tuo/primo_file.wasm",
-        "percorso/al/tuo/secondo_file.wasm",
-        # "moduli/math_module.wasm",
-        # "moduli/string_manipulator.wasm"
-    ]
+    BASE_URL = "http://localhost:50500"
+    BASE_WASM_FOLDER = (
+        "/home/viktor/Desktop/agentic_limes/limes/limes/integration_test/wasm_files/"
+    )
 
     api_client = RuntimeAPIClient(BASE_URL)
 
-    try:
-        run_multi_test(api_client, LISTA_WASM)
-    except requests.exceptions.ConnectionError:
-        print(
-            f"❌ Errore: Impossibile connettersi a {BASE_URL}. Il server Axum è acceso?"
-        )
+    # Load WASM files
+    wasm_agent_bytes = load_wasm_files(BASE_WASM_FOLDER + "agent_executor.wasm")
+    wasm_calculator_bytes = load_wasm_files(BASE_WASM_FOLDER + "calculator.wasm")
+
+    # Get user id
+    user_id = api_client.create_user()
+    print(f"-> Created user with id: {user_id}")
+
+    # Load modules
+    agent_module_id = api_client.register_module(user_id, wasm_agent_bytes)
+    print(f"-> Loaded agent module with id: {agent_module_id}")
+    calculator_module_id = api_client.register_module(user_id, wasm_calculator_bytes)
+    print(f"-> Loaded calculator module with id: {calculator_module_id}")
+
+    # Load functions
+    agent_func_config = {
+        "function_memory_size": 1024 * 1024 * 2,
+        "tap_ip": "127.0.0.1",
+        "function_name": "agent",
+        "function_input_description": "input field of this function is a string with the question/task for the agent",
+        "description": "This function allow the interaction with an agent which can answer to questions or execute tasks",
+    }
+    agent_function_id = api_client.load_function(
+        user_id, agent_module_id, agent_func_config
+    )
+    print(f"-> Loaded agent function with id: {agent_function_id}")
+
+    calculator_function_id = {
+        "function_memory_size": 1024 * 1024 * 2,
+        "tap_ip": "127.0.0.1",
+        "function_name": "calculator",
+        "function_input_description": 'the input must be formatted as list of integer numbers with the operator, like the example in the quotes "num * num - num + num"',
+        "description": "This function is a calculator for a simple math expressions",
+    }
+    calculator_function_id = api_client.load_function(
+        user_id, calculator_module_id, calculator_function_id
+    )
+    print(f"-> Loaded calculator function with id: {calculator_function_id}")
+
+    # Exec a query
+    query = "Can you use the calculator tool and give me the result of the following expression: 5 * 5 - 2 + 7 - 16 / 4 + 2"
+    answer = api_client.exec_function(user_id, agent_function_id, query)
+    print(f"ANSWER: {answer}")
+
+    # Unload allocated resources

@@ -6,8 +6,12 @@ authors = ["Enrico Fiasco e.fiasco@studenti.unipi.it"]
 description = "Limes is a FaaS executor for Wasm Modules with support for SLLM's and LLM's"
 
 [[bin]]
-name = "limes"
+name = "limes-server"
 path = "src/main.rs"
+
+[[bin]]
+name = "limes-run"
+path = "src/limes-run.rs"
 
 [dependencies]
 anyhow = "1.0.97"
@@ -32,3 +36,4 @@ tokio = { version = "1.44.1", features = ["full"] }
 uuid = { version = "1.15.1", features = ["v4"] }
 wasmtime = "30.0.2"
 wasmtime-wasi = "30.0.2"
+wit-bindgen = "0.53.1"

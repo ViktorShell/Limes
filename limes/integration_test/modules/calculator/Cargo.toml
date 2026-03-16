@@ -1,0 +1,12 @@
+[package]
+name = "calculator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+atoi = "2.0.0"
+limes-macro = { path = "/home/viktor/Desktop/agentic_limes/limes/limes/limes-macro" }
+wit-bindgen = "0.53.1"
+
+[lib]
+crate-type = ["cdylib"]
