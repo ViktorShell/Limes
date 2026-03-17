@@ -19,7 +19,7 @@ use wasmtime::{
     component::{bindgen, Component, Instance, Linker, ResourceTable, TypedFunc},
     StoreLimitsBuilder,
 };
-use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
+// use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
 
 // NOTE: Foundamental for the Agent invokation
 bindgen!({
@@ -35,6 +35,7 @@ bindgen!({
             }
         }
     ",
+    async: true,
 });
 
 #[derive(PartialEq, PartialOrd, Debug)]
@@ -120,66 +121,66 @@ pub struct Lambda {
 
 // NOTE: Used to invoke the LimesAgent
 impl limes_api::Host for LambdaState {
-    fn invoke_agent(&mut self, args: String) -> String {
-        // Creiamo il runtime per bloccare l'esecuzione
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        rt.block_on(async {
-            let agent_result = LimesAgent::new_agent(
-                "http://127.0.0.1:11434",
-                "llama3.2:3b",
-                self.user_id.clone(),
-            )
-            .await;
-
-            let agent = match agent_result {
-                Ok(a) => a,
-                Err(_) => {
-                    let msg = "AgentError: There was an error on the Agent initialization";
-                    eprintln!("{}", msg);
-                    return msg.to_string();
-                }
-            };
-
-            match agent.invoke_agent(args).await {
-                Ok(answer) => answer,
-                Err(_) => {
-                    let msg = "AgentError: There was an error when executing the Agent";
-                    eprintln!("{}", msg);
-                    msg.to_string()
-                }
-            }
-        })
-    }
-
-    // async fn invoke_agent(&mut self, args: String) -> String {
-    //     let agent = LimesAgent::new_agent(
-    //         "http://127.0.0.1:11434",
-    //         "llama3.2:3b",
-    //         self.user_id.clone(),
-    //     )
-    //     .await;
+    // fn invoke_agent(&mut self, args: String) -> String {
+    //     // Creiamo il runtime per bloccare l'esecuzione
+    //     let rt = tokio::runtime::Builder::new_current_thread()
+    //         .enable_all()
+    //         .build()
+    //         .unwrap();
     //
-    //     let agent = if let Err(_) = agent {
-    //         eprintln!("AgentError: There was an error on the Agent initialization");
-    //         return "AgentError: There was an error on the Agent initialization".to_string();
-    //     } else {
-    //         agent.unwrap()
-    //     };
+    //     rt.block_on(async {
+    //         let agent_result = LimesAgent::new_agent(
+    //             "http://127.0.0.1:11434",
+    //             "llama3.2:3b",
+    //             self.user_id.clone(),
+    //         )
+    //         .await;
     //
-    //     let parsed = agent.invoke_agent(args).await;
-    //     let answer = if let Err(_) = parsed {
-    //         eprintln!("AgentError: There was an error when executing the Agent");
-    //         return "AgentError: There was an error when executing the Agent".to_string();
-    //     } else {
-    //         parsed.unwrap()
-    //     };
+    //         let agent = match agent_result {
+    //             Ok(a) => a,
+    //             Err(_) => {
+    //                 let msg = "AgentError: There was an error on the Agent initialization";
+    //                 eprintln!("{}", msg);
+    //                 return msg.to_string();
+    //             }
+    //         };
     //
-    //     answer
+    //         match agent.invoke_agent(args).await {
+    //             Ok(answer) => answer,
+    //             Err(_) => {
+    //                 let msg = "AgentError: There was an error when executing the Agent";
+    //                 eprintln!("{}", msg);
+    //                 msg.to_string()
+    //             }
+    //         }
+    //     })
     // }
+
+    async fn invoke_agent(&mut self, args: String) -> String {
+        let agent = LimesAgent::new_agent(
+            "http://127.0.0.1:11434",
+            "llama3.2:3b",
+            self.user_id.clone(),
+        )
+        .await;
+
+        let agent = if let Err(_) = agent {
+            eprintln!("AgentError: There was an error on the Agent initialization");
+            return "AgentError: There was an error on the Agent initialization".to_string();
+        } else {
+            agent.unwrap()
+        };
+
+        let parsed = agent.invoke_agent(args).await;
+        let answer = if let Err(_) = parsed {
+            eprintln!("AgentError: There was an error when executing the Agent");
+            return "AgentError: There was an error when executing the Agent".to_string();
+        } else {
+            parsed.unwrap()
+        };
+
+        answer
+    }
 }
 
 impl Lambda {
@@ -206,54 +207,87 @@ impl Lambda {
     }
 
     pub async fn run(&self, args: &str) -> anyhow::Result<String> {
-        // Init the linker with wasi
         let engine = self.component.engine();
         let mut linker = Linker::<LambdaState>::new(engine);
         wasmtime_wasi::add_to_linker_async(&mut linker)?;
-        // NOTE: SUPER IMPORTANT
+
+        // Registra l'interfaccia host
         limes_api::add_to_linker(&mut linker, |state: &mut LambdaState| state)?;
 
-        // Build the context for function execution
         let wasi_ctx = self.get_wasictx();
         let mut store = self.get_store(wasi_ctx);
-
-        // Interrupt mechanism
         self.init_interrupt_callback(&mut store);
 
-        // Get the function Instance from Component
-        let instance = linker.instantiate_async(&mut store, &self.component).await;
-        if let Err(e) = instance {
-            eprintln!("{e}");
-            return Err(anyhow::anyhow!(
-                "Lambda Error: Unable to load the instance of the component"
-            ));
-        }
+        // 1. Usa la struct generata dal bindgen per istanziare
+        // Invece di linker.instantiate_async, usiamo Runnable::instantiate_async
+        let runnable = Runnable::instantiate_async(&mut store, &self.component, &linker)
+            .await
+            .with_context(|| "Lambda Error: Unable to instantiate component")?;
 
-        let instance = instance.unwrap();
-
-        // let instance = linker
-        //     .instantiate_async(&mut store, &self.component)
-        //     .await
-        //     .with_context(|| "Lambda Error: Unable to load the instance of the component")?;
-
-        // Retriev the function
-        let func = self.get_main_func(&instance, &mut store)?;
-
-        // Exec main function
-        let result = func
-            .call_async(&mut store, (args,))
+        // 2. Chiama la funzione direttamente tramite l'interfaccia esportata
+        // runnable.interface0 è il nome generato per "run: interface { run: ... }"
+        // A seconda della versione di wasmtime, potrebbe chiamarsi anche runnable.run()
+        let result = runnable
+            .run()
+            .call_run(&mut store, args)
             .await
             .map_err(|_| match self.stop.load(Ordering::Relaxed) {
                 true => LambdaError::ForceStop,
                 false => LambdaError::FunctionExecError,
-            })?
-            .0;
+            })?;
 
-        // Reset the store even though it will be de-allocated.
-        // I will remove it soon and change the way the function exec.
-        // let _ = func.post_return_async(&mut store).await;
         Ok(result)
     }
+
+    // pub async fn run(&self, args: &str) -> anyhow::Result<String> {
+    //     // Init the linker with wasi
+    //     let engine = self.component.engine();
+    //     let mut linker = Linker::<LambdaState>::new(engine);
+    //     wasmtime_wasi::add_to_linker_async(&mut linker)?;
+    //     // NOTE: SUPER IMPORTANT
+    //     limes_api::add_to_linker(&mut linker, |state: &mut LambdaState| state)?;
+    //
+    //     // Build the context for function execution
+    //     let wasi_ctx = self.get_wasictx();
+    //     let mut store = self.get_store(wasi_ctx);
+    //
+    //     // Interrupt mechanism
+    //     self.init_interrupt_callback(&mut store);
+    //
+    //     // Get the function Instance from Component
+    //     let instance = linker.instantiate_async(&mut store, &self.component).await;
+    //     if let Err(e) = instance {
+    //         eprintln!("{e}");
+    //         return Err(anyhow::anyhow!(
+    //             "Lambda Error: Unable to load the instance of the component"
+    //         ));
+    //     }
+    //
+    //     let instance = instance.unwrap();
+    //
+    //     // let instance = linker
+    //     //     .instantiate_async(&mut store, &self.component)
+    //     //     .await
+    //     //     .with_context(|| "Lambda Error: Unable to load the instance of the component")?;
+    //
+    //     // Retriev the function
+    //     let func = self.get_main_func(&instance, &mut store)?;
+    //
+    //     // Exec main function
+    //     let result = func
+    //         .call_async(&mut store, (args,))
+    //         .await
+    //         .map_err(|_| match self.stop.load(Ordering::Relaxed) {
+    //             true => LambdaError::ForceStop,
+    //             false => LambdaError::FunctionExecError,
+    //         })?
+    //         .0;
+    //
+    //     // Reset the store even though it will be de-allocated.
+    //     // I will remove it soon and change the way the function exec.
+    //     // let _ = func.post_return_async(&mut store).await;
+    //     Ok(result)
+    // }
 
     pub async fn stop(&self) -> anyhow::Result<()> {
         let engine = self.component.engine();

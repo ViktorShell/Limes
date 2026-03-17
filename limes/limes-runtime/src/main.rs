@@ -73,7 +73,10 @@ async fn register_module_handler(
 ) -> Result<Json<ModuleResponse>, (StatusCode, String)> {
     match runtime.register_module(&user_id, &body).await {
         Ok(module_id) => Ok(Json(ModuleResponse { module_id })),
-        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => {
+            eprintln!("{e}");
+            Err((StatusCode::BAD_REQUEST, e.to_string()))
+        }
     }
 }
 

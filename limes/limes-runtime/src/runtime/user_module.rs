@@ -21,6 +21,11 @@ impl UserModules {
         bytes: &[u8],
     ) -> anyhow::Result<u32> {
         // Create the module
+        let component = Component::from_binary(engine, bytes);
+        if let Err(e) = component {
+            eprintln!("{e}");
+        }
+
         let module_handler = ModuleHandler {
             component: Arc::new(
                 Component::from_binary(engine, bytes)

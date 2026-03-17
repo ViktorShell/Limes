@@ -75,8 +75,8 @@ impl Runtime {
         let key_hash = user_module.get_hash(bytes).await;
         let module_id: ModuleId = user_module
             .insert_module(&self.wasm_engine, key_hash, bytes)
-            .await
-            .context("Runtime: Failed to load the Component from the bytes")?;
+            .await?;
+        // .context("Runtime: Failed to load the Component from the bytes")?;
         Ok(module_id)
     }
 

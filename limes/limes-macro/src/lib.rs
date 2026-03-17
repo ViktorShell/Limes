@@ -11,12 +11,12 @@ pub fn limes_run(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_vis = &input_fn.vis;
 
     let expanded = quote! {
-        // Expose invoke_agent as a free function so user code can call it directly.
-        fn invoke_agent(args: &str) -> String {
-            _limes_wit::component::run::limes_api::invoke_agent(args)
-        }
-
+        // La tua funzione originale
         #fn_vis #fn_sig #fn_body
+
+        pub async fn invoke_agent(args: String) -> String {
+            _limes_wit::component::run::limes_api::invoke_agent(&args).await
+        }
 
         mod _limes_wit {
             wit_bindgen::generate!({
@@ -25,22 +25,24 @@ pub fn limes_run(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     interface limes-api {
                         invoke-agent: func(args: string) -> string;
                     }
+                    // Definiamo l'interfaccia fuori dal world
+                    interface runner {
+                        run: func(args: string) -> string;
+                    }
                     world runnable {
                         import limes-api;
-                        export run: interface {
-                            run: func(args: string) -> string;
-                        }
+                        export runner; // Esportiamo l'interfaccia nominata
                     }
                 "#,
+                async: true,
             });
 
             struct GuestImpl;
 
-            // wit-bindgen generates `exports::run::Guest` for an inline anonymous
-            // interface — NOT `exports::component::run::run::Guest`.
-            impl exports::run::Guest for GuestImpl {
-                fn run(args: String) -> String {
-                    super::#fn_name(args)
+            // Ora il percorso è più chiaro: exports::component::run::runner::Guest
+            impl exports::component::run::runner::Guest for GuestImpl {
+                async fn run(args: String) -> String {
+                    super::#fn_name(args).await
                 }
             }
 
