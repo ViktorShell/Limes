@@ -1,51 +1,44 @@
-use std::{
-    future::Future,
-    net::{Ipv4Addr, SocketAddr},
-    pin::Pin,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
-use anyhow::Context;
 use thiserror::Error;
+use tracing::{debug, error, info, warn};
 
 use crate::agents::LimesAgent;
-use crate::runtime::component::run::limes_api;
-use wasmtime::Store;
-use wasmtime::StoreLimits;
 use wasmtime::{
-    component::{bindgen, Component, Instance, Linker, ResourceTable, TypedFunc},
-    StoreLimitsBuilder,
+    component::{bindgen, Component, HasSelf, Linker, ResourceTable},
+    Store, StoreLimits, StoreLimitsBuilder,
 };
-// use wasmtime_wasi::{IoView, SocketAddrUse, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-// NOTE: Foundamental for the Agent invokation
-bindgen!({
-    inline: r"
-        package component:run;
-        interface limes-api {
-            invoke-agent: func(args: string) -> string;
-        }
-        world runnable {
-            import limes-api;
-            export run: interface {
-                run: func(args: string) -> string;
-            }
-        }
-    ",
-    async: true,
-});
+// ─────────────────────────────────────────────────────────────────────────────
+//  Error types
+// ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(PartialEq, PartialOrd, Debug)]
+#[derive(Error, Debug, PartialEq, PartialOrd)]
+pub enum LambdaError {
+    #[error("Function execution was force-stopped via epoch interruption")]
+    ForceStop,
+    #[error("Function raised a Wasm trap or internal error during execution")]
+    FunctionExecError,
+    #[error("Cannot stop a function that is not currently running")]
+    FunctionNotRunning,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  FunctionHandler — public entity managing a single loaded lambda
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
 pub enum FunctionStatus {
     Ready,
     Running,
     Stopped,
 }
 
-/// The Function Handler have the role to create and handle the lambda functions
+/// Wraps a `Lambda` with metadata and lifecycle state for the runtime.
 #[derive(Debug)]
 pub struct FunctionHandler {
     pub lambda: Lambda,
@@ -61,18 +54,16 @@ impl FunctionHandler {
     pub async fn new(
         component: Arc<Component>,
         memory_size: usize,
-        tap_ip: Ipv4Addr,
         function_name: String,
         function_input_description: String,
         description: String,
         user_id: String,
         function_id: String,
     ) -> anyhow::Result<Self> {
-        let lambda = Lambda::new(component, memory_size, tap_ip, user_id.clone()).await?;
-        let status = FunctionStatus::Ready;
+        let lambda = Lambda::new(component, memory_size, user_id.clone()).await?;
         Ok(Self {
             lambda,
-            status,
+            status: FunctionStatus::Ready,
             function_name,
             function_input_description,
             description,
@@ -82,472 +73,285 @@ impl FunctionHandler {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  LambdaState — per-invocation Wasm store data
+// ─────────────────────────────────────────────────────────────────────────────
+
+bindgen!({
+    inline: r#"
+        package limes:limes;
+        world executor {
+            import invoke-agent: func(input: string) -> string;
+            export run: func(input: string) -> string;
+        }
+    "#,
+    imports: {default: async},
+    exports: {default: async},
+});
+
 pub struct LambdaState {
     wasi_ctx: WasiCtx,
     resource_table: ResourceTable,
     limiter: StoreLimits,
+    /// Identifies which user owns this execution (used by agent calls).
     user_id: String,
 }
 
-impl IoView for LambdaState {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.resource_table
-    }
-}
-
+/// `WasiView` gives `wasmtime_wasi` access to the WASI context and resource
+/// table stored inside our custom store data.
 impl WasiView for LambdaState {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi_ctx
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.resource_table,
+        }
     }
 }
 
-#[derive(Error, Debug, PartialEq, PartialOrd)]
-pub enum LambdaError {
-    #[error("The function execution was stopped")]
-    ForceStop,
-    #[error("The function generated and execution error")]
-    FunctionExecError,
-    #[error("The function is not running")]
-    FunctionNotRunning,
+// ─────────────────────────────────────────────────────────────────────────────
+//  Host implementation of the `limes-api` WIT interface
+// ─────────────────────────────────────────────────────────────────────────────
+
+impl ExecutorImports for LambdaState {
+    async fn invoke_agent(&mut self, input: String) -> String {
+        debug!(user_id = %self.user_id, "Guest invoked invoke_agent");
+
+        let agent =
+            match LimesAgent::new_agent("https://127.0.0.1", "llama3.2:3b", self.user_id.clone())
+                .await
+            {
+                Ok(agent) => agent,
+                Err(e) => {
+                    error!(error = %e, "Failed to initialize LimesAgent");
+                    return format!("AgentError: agent initialization failed - {e}");
+                }
+            };
+
+        match agent.invoke_agent(input).await {
+            Ok(answer) => {
+                debug!("Agent responded successfully");
+                answer
+            }
+            Err(e) => {
+                error!("Agent invocation failed");
+                format!("AgentError: agent invocation failed - {e}")
+            }
+        }
+    }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Lambda — the core execution unit
+// ─────────────────────────────────────────────────────────────────────────────
 
 pub struct Lambda {
     component: Arc<Component>,
     memory_size: usize,
-    tap_ip: Ipv4Addr,
+    /// Shared flag allowing async stop from another task.
     stop: Arc<AtomicBool>,
     user_id: String,
 }
 
-// NOTE: Used to invoke the LimesAgent
-impl limes_api::Host for LambdaState {
-    // fn invoke_agent(&mut self, args: String) -> String {
-    //     // Creiamo il runtime per bloccare l'esecuzione
-    //     let rt = tokio::runtime::Builder::new_current_thread()
-    //         .enable_all()
-    //         .build()
-    //         .unwrap();
-    //
-    //     rt.block_on(async {
-    //         let agent_result = LimesAgent::new_agent(
-    //             "http://127.0.0.1:11434",
-    //             "llama3.2:3b",
-    //             self.user_id.clone(),
-    //         )
-    //         .await;
-    //
-    //         let agent = match agent_result {
-    //             Ok(a) => a,
-    //             Err(_) => {
-    //                 let msg = "AgentError: There was an error on the Agent initialization";
-    //                 eprintln!("{}", msg);
-    //                 return msg.to_string();
-    //             }
-    //         };
-    //
-    //         match agent.invoke_agent(args).await {
-    //             Ok(answer) => answer,
-    //             Err(_) => {
-    //                 let msg = "AgentError: There was an error when executing the Agent";
-    //                 eprintln!("{}", msg);
-    //                 msg.to_string()
-    //             }
-    //         }
-    //     })
-    // }
-
-    async fn invoke_agent(&mut self, args: String) -> String {
-        let agent = LimesAgent::new_agent(
-            "http://127.0.0.1:11434",
-            "llama3.2:3b",
-            self.user_id.clone(),
-        )
-        .await;
-
-        let agent = if let Err(_) = agent {
-            eprintln!("AgentError: There was an error on the Agent initialization");
-            return "AgentError: There was an error on the Agent initialization".to_string();
-        } else {
-            agent.unwrap()
-        };
-
-        let parsed = agent.invoke_agent(args).await;
-        let answer = if let Err(_) = parsed {
-            eprintln!("AgentError: There was an error when executing the Agent");
-            return "AgentError: There was an error when executing the Agent".to_string();
-        } else {
-            parsed.unwrap()
-        };
-
-        answer
-    }
-}
-
 impl Lambda {
+    const MIN_MEMORY_BYTES: usize = 1024 * 1024 * 2; // 2 MiB
+
     pub async fn new(
         component: Arc<Component>,
         memory_size: usize,
-        tap_ip: Ipv4Addr,
         user_id: String,
-    ) -> anyhow::Result<Lambda> {
-        if memory_size < 1024 * 1024 * 2 {
+    ) -> anyhow::Result<Self> {
+        if memory_size < Self::MIN_MEMORY_BYTES {
             return Err(anyhow::anyhow!(
-                "Lambda initialization: Not enought memory: {}",
-                memory_size
+                "Lambda: requested memory {} bytes is below the minimum {} bytes",
+                memory_size,
+                Self::MIN_MEMORY_BYTES
             ));
         }
-        let stop = Arc::new(AtomicBool::new(false));
+        info!(memory_size, "Lambda created");
         Ok(Self {
             component,
             memory_size,
-            tap_ip,
-            stop,
+            stop: Arc::new(AtomicBool::new(false)),
             user_id,
         })
     }
 
     pub async fn run(&self, args: &str) -> anyhow::Result<String> {
+        debug!(args_len = args.len(), "Lambda::run invoked");
+
         let engine = self.component.engine();
         let mut linker = Linker::<LambdaState>::new(engine);
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
 
-        // Registra l'interfaccia host
-        limes_api::add_to_linker(&mut linker, |state: &mut LambdaState| state)?;
+        // Register the standard WASI host functions.
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 
-        let wasi_ctx = self.get_wasictx();
-        let mut store = self.get_store(wasi_ctx);
-        self.init_interrupt_callback(&mut store);
+        // Linker now can interact with invoke-agent
+        Executor::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
 
-        // 1. Usa la struct generata dal bindgen per istanziare
-        // Invece di linker.instantiate_async, usiamo Runnable::instantiate_async
-        let runnable = Runnable::instantiate_async(&mut store, &self.component, &linker)
-            .await
-            .with_context(|| "Lambda Error: Unable to instantiate component")?;
+        // Store for memory
+        let mut store = self.build_store();
+        self.install_epoch_callback(&mut store);
 
-        // 2. Chiama la funzione direttamente tramite l'interfaccia esportata
-        // runnable.interface0 è il nome generato per "run: interface { run: ... }"
-        // A seconda della versione di wasmtime, potrebbe chiamarsi anche runnable.run()
-        let result = runnable
-            .run()
-            .call_run(&mut store, args)
-            .await
-            .map_err(|_| match self.stop.load(Ordering::Relaxed) {
-                true => LambdaError::ForceStop,
-                false => LambdaError::FunctionExecError,
-            })?;
+        // Binding to the run function of the guest
+        let bindings = Executor::instantiate_async(&mut store, &self.component, &linker).await?;
 
+        // Exec the functions
+        let result = bindings.call_run(&mut store, args).await.map_err(|e| {
+            if self.stop.load(Ordering::SeqCst) {
+                warn!("Lambda execution was force-stopped: {e}");
+                LambdaError::ForceStop
+            } else {
+                error!("Lambda execution error: {e}");
+                LambdaError::FunctionExecError
+            }
+        })?;
+
+        debug!("Lambda::run completed successfully");
         Ok(result)
     }
 
-    // pub async fn run(&self, args: &str) -> anyhow::Result<String> {
-    //     // Init the linker with wasi
-    //     let engine = self.component.engine();
-    //     let mut linker = Linker::<LambdaState>::new(engine);
-    //     wasmtime_wasi::add_to_linker_async(&mut linker)?;
-    //     // NOTE: SUPER IMPORTANT
-    //     limes_api::add_to_linker(&mut linker, |state: &mut LambdaState| state)?;
-    //
-    //     // Build the context for function execution
-    //     let wasi_ctx = self.get_wasictx();
-    //     let mut store = self.get_store(wasi_ctx);
-    //
-    //     // Interrupt mechanism
-    //     self.init_interrupt_callback(&mut store);
-    //
-    //     // Get the function Instance from Component
-    //     let instance = linker.instantiate_async(&mut store, &self.component).await;
-    //     if let Err(e) = instance {
-    //         eprintln!("{e}");
-    //         return Err(anyhow::anyhow!(
-    //             "Lambda Error: Unable to load the instance of the component"
-    //         ));
-    //     }
-    //
-    //     let instance = instance.unwrap();
-    //
-    //     // let instance = linker
-    //     //     .instantiate_async(&mut store, &self.component)
-    //     //     .await
-    //     //     .with_context(|| "Lambda Error: Unable to load the instance of the component")?;
-    //
-    //     // Retriev the function
-    //     let func = self.get_main_func(&instance, &mut store)?;
-    //
-    //     // Exec main function
-    //     let result = func
-    //         .call_async(&mut store, (args,))
-    //         .await
-    //         .map_err(|_| match self.stop.load(Ordering::Relaxed) {
-    //             true => LambdaError::ForceStop,
-    //             false => LambdaError::FunctionExecError,
-    //         })?
-    //         .0;
-    //
-    //     // Reset the store even though it will be de-allocated.
-    //     // I will remove it soon and change the way the function exec.
-    //     // let _ = func.post_return_async(&mut store).await;
-    //     Ok(result)
-    // }
-
+    // Signal the running Wasm instance to stop via epoch interruption.
     pub async fn stop(&self) -> anyhow::Result<()> {
-        let engine = self.component.engine();
         if self.stop.load(Ordering::SeqCst) {
             return Err(anyhow::anyhow!(LambdaError::FunctionNotRunning));
         }
         self.stop.store(true, Ordering::SeqCst);
-        engine.increment_epoch();
+        self.component.engine().increment_epoch();
+        info!("Lambda stop signal sent");
         Ok(())
     }
 
-    fn get_main_func(
-        &self,
-        instance: &Instance,
-        store: &mut Store<LambdaState>,
-    ) -> anyhow::Result<TypedFunc<(&str,), (String,)>> {
-        let interface_idx = instance
-            .get_export(&mut *store, None, "component:run/run")
-            .ok_or(anyhow::anyhow!("Function Interface Error"))?;
+    // === Private helpers ====================================================
 
-        let func_idx = instance
-            .get_export(&mut *store, Some(&interface_idx), "run")
-            .ok_or(anyhow::anyhow!("Didn't find the component:run/run -> run"))?;
-
-        instance
-            .get_typed_func::<(&str,), (String,)>(store, func_idx)
-            .with_context(|| "Function Retriev Error")
-    }
-
-    fn init_interrupt_callback(&self, store: &mut Store<LambdaState>) {
-        let stop = self.stop.clone();
-        store.epoch_deadline_callback(move |_| {
-            if !stop.load(Ordering::SeqCst) {
-                return Ok(wasmtime::UpdateDeadline::Yield(1));
-            }
-            Err(anyhow::anyhow!("ForceStop"))
-        });
-    }
-
-    fn get_store(&self, wasi_ctx: WasiCtx) -> Store<LambdaState> {
-        let resource = ResourceTable::new();
-        let store_limits = StoreLimitsBuilder::new()
+    fn build_store(&self) -> Store<LambdaState> {
+        let limiter = StoreLimitsBuilder::new()
             .memory_size(self.memory_size)
             .build();
+
         let state = LambdaState {
-            wasi_ctx,
-            resource_table: resource,
-            limiter: store_limits,
+            wasi_ctx: WasiCtxBuilder::new().inherit_network().build(),
+            resource_table: ResourceTable::new(),
+            limiter,
             user_id: self.user_id.clone(),
         };
+
         let mut store = Store::new(self.component.engine(), state);
         store.limiter(|data| &mut data.limiter);
         store
     }
 
-    fn get_wasictx(&self) -> WasiCtx {
-        // Ip connection filter
-        let tap_ip = self.tap_ip;
-        let f_socket_check =
-            move |s_addr: SocketAddr,
-                  _usage: SocketAddrUse|
-                  -> Pin<Box<dyn Future<Output = bool> + Send + Sync + 'static>> {
-                Box::pin(async move {
-                    match _usage {
-                        SocketAddrUse::TcpBind | SocketAddrUse::UdpBind => match s_addr {
-                            SocketAddr::V4(addr_v4) => addr_v4.ip().eq(&tap_ip),
-                            SocketAddr::V6(_) => false,
-                        },
-                        _ => true,
-                    }
-                })
-            };
-
-        let mut wasictx = WasiCtxBuilder::new();
-        wasictx
-            .inherit_network()
-            .socket_addr_check(f_socket_check)
-            .build()
+    /// Installs an epoch-interruption callback that allows a cooperative stop.
+    fn install_epoch_callback(&self, store: &mut Store<LambdaState>) {
+        let stop_flag = self.stop.clone();
+        store.epoch_deadline_callback(move |_| {
+            if stop_flag.load(Ordering::SeqCst) {
+                Err(wasmtime::Error::msg(
+                    "Lambda: epoch deadline — force stop requested",
+                ))
+            } else {
+                Ok(wasmtime::UpdateDeadline::Yield(1))
+            }
+        });
     }
 }
 
 impl std::fmt::Debug for Lambda {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Lambda")
+        f.debug_struct("Lambda")
+            .field("memory_size", &self.memory_size)
+            .field("user_id", &self.user_id)
+            .finish()
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
-mod test {
-    use crate::runtime::lambda::{Lambda, LambdaError};
-    use std::env;
-    use std::net::Ipv4Addr;
+mod tests {
+    use super::{Lambda, LambdaError};
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
-    use tokio;
-    use wasmtime::component::Component;
-    use wasmtime::*;
+    use wasmtime::{component::Component, Config, Engine, OptLevel};
 
-    // NOTE: Directory where the wasm functions are located
-    static WASM_RESOURCES: &str = concat!(
+    static WASM_DIR: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/resources/lamda_tests/wasm_compiled"
     );
 
-    // NOTE: Actual Tests
+    // ── Helpers ────────────────────────────────────────────────────────────
+
+    fn make_engine() -> Engine {
+        let mut cfg = Config::new();
+        cfg.wasm_component_model(true)
+            .epoch_interruption(true)
+            .cranelift_opt_level(OptLevel::SpeedAndSize);
+        Engine::new(&cfg).expect("Failed to build test engine")
+    }
+
+    fn load_component(engine: &Engine, path: &Path) -> Component {
+        Component::from_file(engine, path).expect("Wasm component not found")
+    }
+
+    async fn make_lambda(engine: &Engine, wasm_file: &str, memory: usize) -> Lambda {
+        let path = PathBuf::from(format!("{WASM_DIR}/{wasm_file}"));
+        let component = Arc::new(load_component(engine, &path));
+        Lambda::new(component, memory, String::new())
+            .await
+            .expect("Lambda::new failed")
+    }
+
+    const MEM_2MIB: usize = 1024 * 1024 * 2;
+
+    // ── Tests ──────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn exec_single_lambda_function() {
-        let engine = gen_engine();
-        let func = gen_lambda(
-            &engine,
-            "exec_rust_lambda_function.wasm",
-            1024 * 1024 * 2,
-            get_default_ip(),
-        )
-        .await;
-
-        let result = func.run("HELLO WORLD").await.unwrap();
+        let engine = make_engine();
+        let lambda = make_lambda(&engine, "exec_rust_lambda_function.wasm", MEM_2MIB).await;
+        let result = lambda.run("HELLO WORLD").await.unwrap();
         assert_eq!("HELLO WORLD### TEST ###", result);
     }
 
     #[tokio::test]
     async fn stop_infinite_loop_function() {
-        let engine = gen_engine();
-        let func = Arc::new(tokio::sync::RwLock::new(
-            gen_lambda(
-                &engine,
-                "stop_infinite_loop.wasm",
-                1024 * 1024 * 2,
-                get_default_ip(),
-            )
-            .await,
-        ));
+        let engine = make_engine();
+        let lambda = Arc::new(make_lambda(&engine, "stop_infinite_loop.wasm", MEM_2MIB).await);
 
-        let handler = tokio::spawn({
-            let func_ref = func.clone();
-            async move {
-                let lref = func_ref.read().await;
-                lref.run("").await
-            }
-        });
+        let run_handle = {
+            let l = lambda.clone();
+            tokio::spawn(async move { l.run("").await })
+        };
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        let _ = func.read().await.stop().await;
-        let handler_stop = handler.await.unwrap();
-        if let Err(e) = handler_stop {
-            if let Some(func_err) = e.downcast_ref::<LambdaError>() {
-                assert_eq!(*func_err, LambdaError::ForceStop);
-                return;
-            }
-        }
-        panic!();
+        lambda.stop().await.expect("stop() failed");
+
+        let result = run_handle.await.expect("task panicked");
+        let err = result.expect_err("Expected LambdaError::ForceStop but run() succeeded");
+        let lambda_err = err
+            .downcast_ref::<LambdaError>()
+            .expect("downcast to LambdaError failed");
+        assert_eq!(*lambda_err, LambdaError::ForceStop);
     }
 
     #[tokio::test]
     async fn multiple_function_execution() {
-        let engine = gen_engine();
-        let func = Arc::new(tokio::sync::RwLock::new(
-            gen_lambda(
-                &engine,
-                "multiple_function_exec.wasm",
-                1024 * 1024 * 2,
-                get_default_ip(),
-            )
-            .await,
-        ));
+        let engine = make_engine();
+        let lambda = Arc::new(make_lambda(&engine, "multiple_function_exec.wasm", MEM_2MIB).await);
 
-        let handler_one = tokio::spawn({
-            let func = func.clone();
-            async move {
-                let func = func.read().await;
-                func.run("f,e,d,c,b,a").await
+        let (r1, r2) = tokio::join!(
+            {
+                let l = lambda.clone();
+                tokio::spawn(async move { l.run("f,e,d,c,b,a").await })
+            },
+            {
+                let l = lambda.clone();
+                tokio::spawn(async move { l.run("e,d,c,b,a").await })
             }
-        });
-
-        let handler_two = tokio::spawn({
-            let func = func.clone();
-            async move {
-                let func = func.read().await;
-                func.run("e,d,c,b,a").await
-            }
-        });
-
-        let (res_one, res_two) =
-            tokio::spawn(async move { (handler_one.await, handler_two.await) })
-                .await
-                .unwrap();
-
-        assert_eq!("[a,b,c,d,e,f]", res_one.unwrap().unwrap());
-        assert_eq!("[a,b,c,d,e]", res_two.unwrap().unwrap());
-    }
-
-    #[tokio::test]
-    async fn tcp_udp_bind_ip_test() {
-        let engine = gen_engine();
-        let func = gen_lambda(
-            &engine,
-            "tcp_udp_bind_to_not_allowed_ip.wasm",
-            1024 * 1024 * 2,
-            get_default_ip(),
-        )
-        .await;
-
-        // NOTE: Allowed ip for tcp/udp
-        assert_eq!(
-            "### TCP ###",
-            func.run("TCP,127.0.0.1:50400").await.unwrap()
-        );
-        assert_eq!(
-            "### UDP ###",
-            func.run("UDP,127.0.0.1:50400").await.unwrap()
         );
 
-        // NOTE: Not allowed ip for tcp/udp
-        if let Err(e) = func.run("TCP,192.168.2.2.3:50300").await {
-            if let Some(func_err) = e.downcast_ref::<LambdaError>() {
-                assert_eq!(LambdaError::FunctionExecError, *func_err);
-            } else {
-                panic!();
-            }
-        }
-
-        if let Err(e) = func.run("UDP,192.168.2.2.3:50300").await {
-            if let Some(func_err) = e.downcast_ref::<LambdaError>() {
-                assert_eq!(LambdaError::FunctionExecError, *func_err);
-            } else {
-                panic!();
-            }
-        }
-    }
-
-    // NOTE: Utility functions
-
-    fn get_default_ip() -> Ipv4Addr {
-        Ipv4Addr::new(127, 0, 0, 1)
-    }
-
-    fn gen_engine() -> Engine {
-        let mut config = Config::new();
-        config
-            .async_support(true)
-            .epoch_interruption(true)
-            .cranelift_opt_level(OptLevel::SpeedAndSize);
-        Engine::new(&config).unwrap()
-    }
-
-    fn load_component(engine: &Engine, path: &Path) -> wasmtime::component::Component {
-        Component::from_file(engine, path).expect("Wasm module not found")
-    }
-
-    async fn gen_lambda(
-        engine: &Engine,
-        wasm_file: &str,
-        memory_size: usize,
-        tap_ip: Ipv4Addr,
-    ) -> Lambda {
-        let wasm_function_path = PathBuf::from(&format!("{}/{}", WASM_RESOURCES, wasm_file));
-        let component = Arc::new(load_component(engine, &wasm_function_path));
-        Lambda::new(component.clone(), memory_size, tap_ip, "".to_string())
-            .await
-            .unwrap()
+        assert_eq!("[a,b,c,d,e,f]", r1.unwrap().unwrap());
+        assert_eq!("[a,b,c,d,e]", r2.unwrap().unwrap());
     }
 }

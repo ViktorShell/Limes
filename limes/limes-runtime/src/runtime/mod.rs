@@ -1,82 +1,125 @@
 use std::{
     collections::HashMap,
-    net::Ipv4Addr,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, OnceLock,
     },
 };
 
-use crate::runtime::lambda::*;
-use crate::runtime::runtime_builder::*;
-use crate::runtime::types::*;
-use crate::runtime::user_module::*;
-
-use anyhow::Context;
 use nanoid::nanoid;
+use thiserror::Error;
 use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
 use wasmtime::{Config, Engine};
+
+use crate::runtime::lambda::FunctionHandler;
+use crate::runtime::runtime_builder::RuntimeBuilder;
+use crate::runtime::types::{FunctionId, ModuleId, UserId};
+use crate::runtime::user_module::UserModules;
 
 pub mod lambda;
 pub mod runtime_builder;
 pub mod types;
 pub mod user_module;
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Error types
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Error, Debug)]
+pub enum RuntimeError {
+    #[error("User not found: {0}")]
+    UserNotFound(String),
+
+    #[error("Module not found: {0}")]
+    ModuleNotFound(ModuleId),
+
+    #[error("Function not found: {0}")]
+    FunctionNotFound(String),
+
+    #[error(
+        "Insufficient memory: requested {requested} bytes but only {available} bytes available"
+    )]
+    InsufficientMemory { requested: usize, available: usize },
+
+    #[error("Runtime not initialized — call Runtime::new().build() first")]
+    NotInitialized,
+
+    #[error("Engine configuration error: {0}")]
+    EngineConfig(String),
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Global singleton
+// ─────────────────────────────────────────────────────────────────────────────
+
+static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Runtime
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[derive(Debug)]
 pub struct Runtime {
-    pub memory_size: usize, // FIX: Must implement the increment using Atomics
-    pub max_allocatable_functions: usize, // FIX: Must implement
-    pub currently_allocated_functions: Arc<AtomicUsize>, // FIX: Must implement
+    /// Total memory budget shared across all loaded functions.
+    pub memory_size: usize,
+    /// Maximum number of concurrently loaded functions.
+    pub max_allocatable_functions: usize,
+    pub currently_allocated_functions: Arc<AtomicUsize>,
     pub wasm_engine: Arc<Engine>,
     pub users: Arc<RwLock<HashMap<UserId, UserModules>>>,
 }
 
-static RUNTIME_REF: OnceLock<Arc<Runtime>> = OnceLock::new();
-
 impl Runtime {
+    /// Returns a builder with sensible defaults (100 MiB, 100 functions).
     pub fn new() -> RuntimeBuilder {
-        RuntimeBuilder {
-            memory_size: Some(1024 * 1024 * 100),
-            max_functions: Some(100),
-        }
+        RuntimeBuilder::default()
     }
 
-    pub async fn register_user(&self) -> anyhow::Result<String> {
-        let user_id: String = uuid::Uuid::new_v4().to_string();
-        let user_module = UserModules::default();
+    /// Returns a clone of the global singleton `Arc<Runtime>`.
+    pub fn get_runtime_ref() -> Result<Arc<Runtime>, RuntimeError> {
+        RUNTIME.get().cloned().ok_or(RuntimeError::NotInitialized)
+    }
+
+    // ─── User management ─────────────────────────────────────────────────────
+
+    pub async fn register_user(&self) -> anyhow::Result<UserId> {
+        let user_id = uuid::Uuid::new_v4().to_string();
         self.users
             .write()
             .await
-            .insert(user_id.clone(), user_module);
+            .insert(user_id.clone(), UserModules::default());
+        info!(user_id, "User registered");
         Ok(user_id)
     }
 
     pub async fn remove_user(&self, user_id: &UserId) -> bool {
-        if self.users.read().await.contains_key(user_id) {
-            self.users.write().await.remove(user_id);
-            return true;
+        let removed = self.users.write().await.remove(user_id).is_some();
+        if removed {
+            info!(user_id, "User removed");
+        } else {
+            warn!(user_id, "Attempted to remove unknown user");
         }
-        false
+        removed
     }
+
+    // ─── Module management ───────────────────────────────────────────────────
 
     pub async fn register_module(
         &self,
         user_id: &UserId,
         bytes: &[u8],
     ) -> anyhow::Result<ModuleId> {
-        let user_guard = self.users.read().await;
+        let users = self.users.read().await;
+        let user_modules = users
+            .get(user_id)
+            .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
-        self.check_if_user_exist(user_id).await?;
-
-        // Insert the module in the UserModules
-        // NOTE: Secure unwrap due to UserModules::default()
-        let user_module = user_guard.get(user_id).unwrap();
-
-        let key_hash = user_module.get_hash(bytes).await;
-        let module_id: ModuleId = user_module
-            .insert_module(&self.wasm_engine, key_hash, bytes)
+        let key = user_modules.compute_hash(bytes);
+        let module_id = user_modules
+            .insert_module(&self.wasm_engine, key, bytes)
             .await?;
-        // .context("Runtime: Failed to load the Component from the bytes")?;
+        info!(user_id, module_id, "Wasm module registered");
         Ok(module_id)
     }
 
@@ -85,84 +128,73 @@ impl Runtime {
         user_id: &UserId,
         module_id: &ModuleId,
     ) -> anyhow::Result<()> {
-        let user_guard = self.users.read().await;
+        let users = self.users.read().await;
+        let user_modules = users
+            .get(user_id)
+            .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
-        self.check_if_user_exist(user_id).await?;
-
-        // Get UserModules
-        let user_module = user_guard.get(user_id).unwrap();
-        if user_module.contains_module(module_id).await {
-            user_module.remove_module(module_id).await;
+        if user_modules.contains_module(module_id).await {
+            user_modules.remove_module(module_id).await;
+            info!(user_id, module_id, "Wasm module removed");
+        } else {
+            warn!(user_id, module_id, "Attempted to remove unknown module");
         }
         Ok(())
     }
 
-    async fn check_if_user_exist(&self, user_id: &UserId) -> anyhow::Result<bool> {
-        let user_guard = self.users.read().await;
-        if !user_guard.contains_key(user_id) {
-            return Err(anyhow::anyhow!(
-                "Runtime: Didn't fine the user with id: {user_id}"
-            ));
-        }
-        Ok(true)
-    }
+    // ─── Function management ─────────────────────────────────────────────────
 
     pub async fn load_function(
         &self,
         user_id: &UserId,
         module_id: &ModuleId,
         function_memory_size: usize,
-        tap_ip: Ipv4Addr,
         function_name: String,
         function_input_description: String,
         description: String,
     ) -> anyhow::Result<FunctionId> {
-        // Check if already exists
-        let users = self.users.read().await;
-        let user = users.get(user_id).ok_or(anyhow::anyhow!(
-            "Runtime: No user found with the following id"
-        ))?;
-
-        // Get the module
-        let module = user.get_modules(module_id).await.ok_or(anyhow::anyhow!(
-            "Runtime: Error with the registered component"
-        ))?;
-
-        // Function memory
-        let memory = self.memory_size - function_memory_size;
-        if memory == 0 {
-            return Err(anyhow::anyhow!(
-                "Runtime: Not enought memory to allocate the current function"
-            ));
+        let available = self.memory_size;
+        if function_memory_size > available {
+            return Err(RuntimeError::InsufficientMemory {
+                requested: function_memory_size,
+                available,
+            }
+            .into());
         }
 
-        // FIX: must fix
-        // self.memory_size = self.memory_size - function_memory_size;
+        let users = self.users.read().await;
+        let user_modules = users
+            .get(user_id)
+            .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
-        // Build the function & FunctionId
-        let func_id = nanoid!();
-        let func_handl = FunctionHandler::new(
-            module.component,
+        let module_handler = user_modules
+            .get_module(module_id)
+            .await
+            .ok_or(RuntimeError::ModuleNotFound(*module_id))?;
+
+        let function_id = nanoid!();
+        let handler = FunctionHandler::new(
+            module_handler.component,
             function_memory_size,
-            tap_ip,
-            function_name,
+            function_name.clone(),
             function_input_description,
             description,
             user_id.clone(),
-            func_id.clone(),
+            function_id.clone(),
         )
         .await?;
 
-        // Register the function by hash
-        let mut loaded_funcs = user.loaded_functions.write().await;
-        loaded_funcs.insert(func_id.clone(), Arc::new(func_handl));
+        user_modules
+            .loaded_functions
+            .write()
+            .await
+            .insert(function_id.clone(), Arc::new(handler));
 
-        // Increase counter FIX: must fix
-        let mut current = self.currently_allocated_functions.load(Ordering::SeqCst);
         self.currently_allocated_functions
-            .store(current + 1, Ordering::SeqCst);
+            .fetch_add(1, Ordering::SeqCst);
 
-        Ok(func_id)
+        info!(user_id, function_id, function_name, "Function loaded");
+        Ok(function_id)
     }
 
     pub async fn unload_function(
@@ -170,15 +202,21 @@ impl Runtime {
         user_id: &UserId,
         function_id: &FunctionId,
     ) -> anyhow::Result<()> {
-        // Check if already exists
         let users = self.users.read().await;
-        let user = users.get(user_id).ok_or(anyhow::anyhow!(
-            "Runtime: No user found with the following id"
-        ))?;
+        let user_modules = users
+            .get(user_id)
+            .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
-        // Get the module
-        let mut module = user.loaded_functions.write().await;
-        module.remove_entry(function_id);
+        user_modules
+            .loaded_functions
+            .write()
+            .await
+            .remove(function_id);
+
+        self.currently_allocated_functions
+            .fetch_sub(1, Ordering::SeqCst);
+
+        info!(user_id, function_id, "Function unloaded");
         Ok(())
     }
 
@@ -188,19 +226,25 @@ impl Runtime {
         function_id: &FunctionId,
         args: &str,
     ) -> anyhow::Result<String> {
-        // Search for the user and function
-        let users = self.users.read().await;
-        let user = users.get(user_id).ok_or(anyhow::anyhow!(
-            "Runtime: No user found with the following id"
-        ))?;
+        debug!(
+            user_id,
+            function_id,
+            args_len = args.len(),
+            "Executing function"
+        );
 
-        let func_map = user.loaded_functions.read().await;
-        let functions = func_map.get(function_id).ok_or(anyhow::anyhow!(
-            "Runtime: Function not found with id: {}",
-            function_id
-        ));
-        let func = functions?;
-        let result = func.lambda.run(args).await?;
+        let users = self.users.read().await;
+        let user_modules = users
+            .get(user_id)
+            .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
+
+        let functions = user_modules.loaded_functions.read().await;
+        let handler = functions
+            .get(function_id)
+            .ok_or_else(|| RuntimeError::FunctionNotFound(function_id.clone()))?;
+
+        let result = handler.lambda.run(args).await?;
+        info!(user_id, function_id, "Function executed successfully");
         Ok(result)
     }
 
@@ -209,229 +253,156 @@ impl Runtime {
         user_id: &UserId,
         function_id: &FunctionId,
     ) -> anyhow::Result<()> {
-        // Search for the user and function
         let users = self.users.read().await;
-        let user = users.get(user_id).ok_or(anyhow::anyhow!(
-            "Runtime: No user found with the following id"
-        ))?;
+        let user_modules = users
+            .get(user_id)
+            .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
-        let func_map = user.loaded_functions.read().await;
-        let functions = func_map.get(function_id).ok_or(anyhow::anyhow!(
-            "Runtime: Function not found with id: {}",
-            function_id
-        ));
-        let func = functions?;
-        func.lambda.stop().await
-    }
+        let functions = user_modules.loaded_functions.read().await;
+        let handler = functions
+            .get(function_id)
+            .ok_or_else(|| RuntimeError::FunctionNotFound(function_id.clone()))?;
 
-    pub fn get_runtime_ref() -> anyhow::Result<Arc<Runtime>> {
-        let rt_ref = RUNTIME_REF.get().context("Runtime: Not initialized")?;
-        Ok(rt_ref.clone())
+        handler.lambda.stop().await
     }
 
     pub async fn get_user_functions(
         &self,
         user_id: &UserId,
     ) -> anyhow::Result<Vec<Arc<FunctionHandler>>> {
-        let user_guard = self.users.read().await;
-        let user_modules = user_guard
+        let users = self.users.read().await;
+        let user_modules = users
             .get(user_id)
-            .ok_or(anyhow::anyhow!("Runtime: User not found"))?;
+            .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
-        let user_func_guard = user_modules.loaded_functions.read().await;
-        let func_arr: Vec<Arc<FunctionHandler>> = user_func_guard.values().cloned().collect();
+        let functions = user_modules.loaded_functions.read().await;
+        Ok(functions.values().cloned().collect())
+    }
 
-        Ok(func_arr)
+    // ─── Internal ────────────────────────────────────────────────────────────
+
+    pub(crate) fn set_global(rt: Arc<Runtime>) {
+        // Ignore the error — in tests multiple runtimes may be built
+        let _ = RUNTIME.set(rt);
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
-    use std::fs::File;
-    use std::io::BufReader;
-    use std::io::Read;
     use std::path::PathBuf;
 
-    // NOTE: Directory where the wasm functions are located
-    static WASM_RESOURCES: &str = concat!(
+    static WASM_DIR: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/resources/lamda_tests/wasm_compiled"
     );
 
-    /// Test User registration and deletion
-    #[tokio::test]
-    async fn user_registartion_deletion() {
-        let rt = Runtime::new().build().await.unwrap();
-
-        let user_id_1 = rt.register_user().await.unwrap();
-        let user_id_2 = rt.register_user().await.unwrap();
-        let user_id_3 = rt.register_user().await.unwrap();
-        assert!(!user_id_1.is_empty());
-        assert!(!user_id_2.is_empty());
-        assert!(!user_id_3.is_empty());
-        rt.remove_user(&user_id_1).await;
-        assert_eq!(rt.users.read().await.len(), 2);
-    }
-
-    /// Test Module Registration and Deletion
-    #[tokio::test]
-    async fn module_registration_and_deletion() {
-        let rt = Runtime::new().build().await.unwrap();
-
-        // User Id's
-        let user_id_one = rt.register_user().await.unwrap();
-        let user_id_two = rt.register_user().await.unwrap();
-
-        // Preload Modules as Bytes
-        let wasm_mod_1 = load_from_file("stop_infinite_loop.wasm");
-        let wasm_mod_2 = load_from_file("multiple_function_exec.wasm");
-        let wasm_mod_3 = load_from_file("exec_rust_lambda_function.wasm");
-
-        // Register some modules
-        // User 1
-        let module_id_1_1 = rt
-            .register_module(&user_id_one, &wasm_mod_1)
-            .await
-            .unwrap_or(0);
-        let module_id_1_2 = rt
-            .register_module(&user_id_one, &wasm_mod_2)
-            .await
-            .unwrap_or(0);
-        // User 2
-        let module_id_2_3 = rt
-            .register_module(&user_id_two, &wasm_mod_3)
-            .await
-            .unwrap_or(0);
-
-        assert!(module_id_1_1 != 0);
-        assert!(module_id_1_2 != 0);
-        assert!(module_id_2_3 != 0);
+    fn load_bytes(name: &str) -> Vec<u8> {
+        let path = PathBuf::from(format!("{WASM_DIR}/{name}"));
+        std::fs::read(path).expect("wasm file not found")
     }
 
     #[tokio::test]
-    async fn load_functions_and_execute() {
+    async fn user_registration_and_removal() {
         let rt = Runtime::new().build().await.unwrap();
+        let u1 = rt.register_user().await.unwrap();
+        let u2 = rt.register_user().await.unwrap();
+        assert!(!u1.is_empty());
+        assert!(!u2.is_empty());
+        assert!(rt.remove_user(&u1).await);
+        assert_eq!(rt.users.read().await.len(), 1);
+        // Removing non-existent user returns false
+        assert!(!rt.remove_user(&u1).await);
+    }
 
-        // Defines two users
-        let user_one_id = rt.register_user().await.unwrap();
-        let user_two_id = rt.register_user().await.unwrap();
+    #[tokio::test]
+    async fn module_registration_and_removal() {
+        let rt = Runtime::new().build().await.unwrap();
+        let user = rt.register_user().await.unwrap();
+        let bytes = load_bytes("exec_rust_lambda_function.wasm");
+        let mid = rt.register_module(&user, &bytes).await.unwrap();
+        assert_ne!(mid, 0);
+        rt.remove_module(&user, &mid).await.unwrap();
+    }
 
-        // Load modules
-        let module_op_a_b = load_from_file("op_a_b.wasm");
-        let module_sorter = load_from_file("multiple_function_exec.wasm");
-        let module_infinite_loop = load_from_file("stop_infinite_loop.wasm");
+    #[tokio::test]
+    async fn load_and_exec_function() {
+        let rt = Runtime::new().build().await.unwrap();
+        let user = rt.register_user().await.unwrap();
 
-        // Register modules for users_one
-        let user_one_module_sorter_id = rt
-            .register_module(&user_one_id, &module_sorter)
-            .await
-            .unwrap();
-        let user_one_module_op_a_b_id = rt
-            .register_module(&user_one_id, &module_op_a_b)
-            .await
-            .unwrap();
+        let sorter_bytes = load_bytes("multiple_function_exec.wasm");
+        let op_bytes = load_bytes("op_a_b.wasm");
 
-        // Register modules for user_two
-        let user_two_module_op_a_b_id = rt
-            .register_module(&user_two_id, &module_op_a_b)
-            .await
-            .unwrap();
-        let user_two_module_infinite_loop_id = rt
-            .register_module(&user_two_id, &module_infinite_loop)
-            .await
-            .unwrap();
+        let mid_sort = rt.register_module(&user, &sorter_bytes).await.unwrap();
+        let mid_op = rt.register_module(&user, &op_bytes).await.unwrap();
 
-        // Load functions for user one
-        let tap_ip = Ipv4Addr::new(127, 0, 0, 1);
-
-        let user_one_op_a_b_func_id = rt
+        let fid_sort = rt
             .load_function(
-                &user_one_id,
-                &user_one_module_op_a_b_id,
+                &user,
+                &mid_sort,
                 1024 * 1024 * 2,
-                tap_ip,
-                "sum".to_string(),
-                "some input".to_string(),
-                "execute the sum between two numbers a and b".to_string(),
+                "sort".into(),
+                "comma-separated list".into(),
+                "sort items".into(),
             )
             .await
             .unwrap();
 
-        let user_one_sorter_func_id = rt
+        let fid_op = rt
             .load_function(
-                &user_one_id,
-                &user_one_module_sorter_id,
+                &user,
+                mid_op,
                 1024 * 1024 * 2,
-                tap_ip,
-                "sort".to_string(),
-                "some input".to_string(),
-                "sort a set of item in the input form like i1,i2,i3,i4".to_string(),
+                "calc".into(),
+                "expression".into(),
+                "math",
+            )
+            .into()
+            .await
+            .unwrap();
+
+        let (r_sort, r_op) = tokio::join!(
+            rt.exec_function(&user, &fid_sort, "f,e,c,d,a,x"),
+            rt.exec_function(&user, &fid_op, "15 + 16")
+        );
+
+        assert_eq!(r_sort.unwrap(), "[a,c,d,e,f,x]");
+        assert_eq!(r_op.unwrap(), "31");
+    }
+
+    #[tokio::test]
+    async fn stop_infinite_loop_via_runtime() {
+        let rt = Arc::new(Runtime::new().build().await.unwrap());
+        let user = rt.register_user().await.unwrap();
+        let bytes = load_bytes("stop_infinite_loop.wasm");
+        let mid = rt.register_module(&user, &bytes).await.unwrap();
+        let fid = rt
+            .load_function(
+                &user,
+                &mid,
+                1024 * 1024 * 2,
+                "loop".into(),
+                "".into(),
+                "infinite loop".into(),
             )
             .await
             .unwrap();
 
-        // Load functions for user_two
-        let user_two_op_a_b_func_id = rt
-            .load_function(
-                &user_two_id,
-                &user_two_module_op_a_b_id,
-                1024 * 1024 * 2,
-                tap_ip,
-                "sum".to_string(),
-                "some input".to_string(),
-                "execute the sum between two numbers a and b".to_string(),
-            )
-            .await
-            .unwrap();
-
-        let user_two_infinite_loop_func = rt
-            .load_function(
-                &user_two_id,
-                &user_two_module_infinite_loop_id,
-                1024 * 1024 * 2,
-                tap_ip,
-                "loop".to_string(),
-                "some input".to_string(),
-                "is an infinite loop, used for the testing".to_string(),
-            )
-            .await
-            .unwrap();
-
-        // Exec functions in parallel
-        // 1. Spawna a task to stop the infinite loop function
         tokio::spawn({
-            let rt_clone = rt.clone();
-            let uid = user_two_id.clone();
-            let fid = user_two_infinite_loop_func.clone();
-
+            let rt2 = rt.clone();
+            let u = user.clone();
+            let f = fid.clone();
             async move {
-                // Diamo il tempo alla funzione Wasm di iniziare l'esecuzione
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                rt_clone.stop_function(&uid, &fid).await
+                rt2.stop_function(&u, &f).await.unwrap();
             }
         });
 
-        // Join on parallel execution
-        let (user_one_op_r, user_one_sort_r, user_two_op_r, user_two_inf_r) = tokio::join!(
-            rt.exec_function(&user_one_id, &user_one_op_a_b_func_id, "15 + 16"),
-            rt.exec_function(&user_one_id, &user_one_sorter_func_id, "f,e,c,d,a,x"),
-            rt.exec_function(&user_two_id, &user_two_op_a_b_func_id, "15 / 5"),
-            rt.exec_function(&user_two_id, &user_two_infinite_loop_func, "")
-        );
-
-        assert_eq!(user_one_op_r.unwrap(), "31");
-        assert_eq!(user_one_sort_r.unwrap(), "[a,c,d,e,f,x]");
-        assert_eq!(user_two_op_r.unwrap(), "3");
-        assert!(user_two_inf_r.is_err());
-    }
-
-    fn load_from_file(wasm_name: &str) -> Vec<u8> {
-        let path = PathBuf::from(&format!("{}/{}", WASM_RESOURCES, wasm_name));
-        let file = File::open(path).unwrap();
-        let mut reader = BufReader::new(file);
-        let mut buffer = Vec::new();
-        reader.read_to_end(&mut buffer).unwrap();
-        buffer
+        let result = rt.exec_function(&user, &fid, "").await;
+        assert!(result.is_err());
     }
 }

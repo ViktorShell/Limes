@@ -1,11 +1,31 @@
-use super::lambda::*;
-use super::types::*;
-use anyhow::Context;
+use std::{collections::HashMap, sync::Arc};
+
+use anyhow::Result;
 use crc32fast::Hasher;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 use wasmtime::{component::Component, Engine};
+
+use super::lambda::FunctionHandler;
+use super::types::{FunctionId, ModuleId};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ModuleHandler — thin wrapper around a compiled Wasm component
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct ModuleHandler {
+    pub component: Arc<Component>,
+}
+
+impl std::fmt::Debug for ModuleHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ModuleHandler")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  UserModules — all modules and loaded functions for a single user
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub struct UserModules {
@@ -14,40 +34,33 @@ pub struct UserModules {
 }
 
 impl UserModules {
+    /// Compile `bytes` into a Wasm component and store it under `key`.
+    /// Returns the key on success.
     pub async fn insert_module(
         &self,
         engine: &Engine,
         key: ModuleId,
         bytes: &[u8],
-    ) -> anyhow::Result<u32> {
-        // Create the module
-        let component = Component::from_binary(engine, bytes);
-        if let Err(e) = component {
-            eprintln!("{e}");
-        }
+    ) -> Result<ModuleId> {
+        let component = Component::from_binary(engine, bytes)
+            .map_err(|e| anyhow::anyhow!("UserModules: failed to compile component: {e}"))?;
 
-        let module_handler = ModuleHandler {
-            component: Arc::new(
-                Component::from_binary(engine, bytes)
-                    .context("UserModule: Unable to register the module")?,
-            ),
-        };
-
-        // Insert the module
-        (*self.wasm_modules)
+        self.wasm_modules
             .write()
             .await
-            .insert(key, module_handler);
+            .insert(key, ModuleHandler { component: Arc::new(component) });
+
         Ok(key)
     }
 
-    pub async fn get_hash(&self, bytes: &[u8]) -> ModuleId {
+    /// Compute a CRC-32 fingerprint of the bytes, used as the `ModuleId`.
+    pub fn compute_hash(&self, bytes: &[u8]) -> ModuleId {
         let mut hasher = Hasher::new();
         hasher.update(bytes);
         hasher.finalize()
     }
 
-    pub async fn get_modules(&self, module_id: &ModuleId) -> Option<ModuleHandler> {
+    pub async fn get_module(&self, module_id: &ModuleId) -> Option<ModuleHandler> {
         self.wasm_modules.read().await.get(module_id).cloned()
     }
 
@@ -57,16 +70,5 @@ impl UserModules {
 
     pub async fn remove_module(&self, module_id: &ModuleId) {
         self.wasm_modules.write().await.remove(module_id);
-    }
-}
-
-#[derive(Clone)]
-pub struct ModuleHandler {
-    pub component: Arc<Component>,
-}
-
-impl std::fmt::Debug for ModuleHandler {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ModuleHandler")
     }
 }

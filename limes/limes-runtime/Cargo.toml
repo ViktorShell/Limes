@@ -2,8 +2,8 @@
 name = "limes"
 version = "0.2.0"
 edition = "2021"
-authors = ["Enrico Fiasco e.fiasco@studenti.unipi.it"]
-description = "Limes is a FaaS executor for Wasm Modules with support for SLLM's and LLM's"
+authors = ["Enrico Fiasco <e.fiasco@studenti.unipi.it>"]
+description = "Limes — FaaS executor for Wasm modules with SLLM/LLM support"
 
 [[bin]]
 name = "limes-server"
@@ -14,25 +14,39 @@ name = "limes-run"
 path = "src/limes-run.rs"
 
 [dependencies]
-anyhow = "1.0.97"
-async-trait = "0.1.88"
-atoi = "2.0.0"
-axum = "0.7"
-bytes = "1.11.1"
-clap = { version = "4.5.37", features = ["derive"] }
-crc32fast = "1.4.2"
-env_logger = "0.11.8"
-json = "0.12.4"
-llama-cpp-2 = "0.1.135"
-llama-cpp-sys-2 = "0.1.135"
-log = "0.4.27"
-nanoid = "0.4.0"
-regex = "1.12.3"
-rig-core = "0.32.0"
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.149"
-thiserror = "2.0.18"
-tokio = { version = "1.44.1", features = ["full"] }
-uuid = { version = "1.15.1", features = ["v4"] }
-wasmtime = "42.0.1"
-wasmtime-wasi = "42.0.1"
+# Web server
+axum        = "0.7"
+bytes       = "1"
+
+# CLI
+clap        = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow      = "1"
+thiserror   = "2"
+
+# Async runtime
+tokio       = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Logging (structured async logging)
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Serde
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+
+# Unique IDs
+nanoid      = "0.4"
+uuid        = { version = "1", features = ["v4"] }
+
+# Wasm hash
+crc32fast   = "1"
+
+# LLM agent
+rig-core    = "0.32.0"
+
+# WebAssembly runtime
+wasmtime        = "42.0.1"
+wasmtime-wasi   = "42.0.1"

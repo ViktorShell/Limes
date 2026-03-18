@@ -1,5 +1,7 @@
-use anyhow::Context;
-use atoi::atoi;
+use anyhow::Result;
+use tracing::{error, info};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -11,14 +13,15 @@ use bytes::Bytes;
 use clap::Parser;
 use limes::runtime::Runtime;
 use serde::{Deserialize, Serialize};
-use std::{net::Ipv4Addr, str::FromStr, sync::Arc};
+use std::sync::Arc;
 
-// --- DTOs (Data Transfer Objects) ---
+// ─────────────────────────────────────────────────────────────────────────────
+//  DTOs
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct LoadFunctionPayload {
     pub function_memory_size: usize,
-    pub tap_ip: Ipv4Addr,
     pub function_name: String,
     pub function_input_description: String,
     pub description: String,
@@ -44,15 +47,18 @@ pub struct ExecResponse {
     pub result: String,
 }
 
-// --- Handler Functions ---
+// ─────────────────────────────────────────────────────────────────────────────
+//  Handlers
+// ─────────────────────────────────────────────────────────────────────────────
 
 async fn register_user_handler(
     State(runtime): State<Arc<Runtime>>,
 ) -> Result<Json<UserResponse>, (StatusCode, String)> {
-    match runtime.register_user().await {
-        Ok(user_id) => Ok(Json(UserResponse { user_id })),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-    }
+    runtime
+        .register_user()
+        .await
+        .map(|user_id| Json(UserResponse { user_id }))
+        .map_err(internal_error)
 }
 
 async fn remove_user_handler(
@@ -69,15 +75,16 @@ async fn remove_user_handler(
 async fn register_module_handler(
     State(runtime): State<Arc<Runtime>>,
     Path(user_id): Path<String>,
-    body: Bytes, // Bytes of the wasm module directly inside the body
+    body: Bytes,
 ) -> Result<Json<ModuleResponse>, (StatusCode, String)> {
-    match runtime.register_module(&user_id, &body).await {
-        Ok(module_id) => Ok(Json(ModuleResponse { module_id })),
-        Err(e) => {
-            eprintln!("{e}");
-            Err((StatusCode::BAD_REQUEST, e.to_string()))
-        }
-    }
+    runtime
+        .register_module(&user_id, &body)
+        .await
+        .map(|module_id| Json(ModuleResponse { module_id }))
+        .map_err(|e| {
+            error!(error = %e, "register_module failed");
+            (StatusCode::BAD_REQUEST, e.to_string())
+        })
 }
 
 async fn load_function_handler(
@@ -85,102 +92,112 @@ async fn load_function_handler(
     Path((user_id, module_id)): Path<(String, u32)>,
     Json(payload): Json<LoadFunctionPayload>,
 ) -> Result<Json<FunctionResponse>, (StatusCode, String)> {
-    match runtime
+    runtime
         .load_function(
             &user_id,
             &module_id,
             payload.function_memory_size,
-            payload.tap_ip,
             payload.function_name,
             payload.function_input_description,
             payload.description,
         )
         .await
-    {
-        Ok(function_id) => Ok(Json(FunctionResponse { function_id })),
-        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
-    }
+        .map(|function_id| Json(FunctionResponse { function_id }))
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
 async fn exec_function_handler(
     State(runtime): State<Arc<Runtime>>,
     Path((user_id, function_id)): Path<(String, String)>,
-    body: String, // Gli argomenti passati come stringa raw nel body
+    body: String,
 ) -> Result<Json<ExecResponse>, (StatusCode, String)> {
-    match runtime.exec_function(&user_id, &function_id, &body).await {
-        Ok(result) => Ok(Json(ExecResponse { result })),
-        Err(e) => {
-            eprintln!("{}", e);
-            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
-        }
-    }
+    runtime
+        .exec_function(&user_id, &function_id, &body)
+        .await
+        .map(|result| Json(ExecResponse { result }))
+        .map_err(|e| {
+            error!(error = %e, user_id, function_id, "exec_function failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })
 }
 
-// --- Setup Principale del Server ---
+// ─────────────────────────────────────────────────────────────────────────────
+//  CLI
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(
+    version,
+    about = "Limes — FaaS runtime for Wasm modules with LLM support"
+)]
 struct Args {
-    /// The ip address in the form of xxx.xxx.xxx.xxx
-    #[arg(short, long)]
+    /// Server bind address (e.g. 127.0.0.1)
+    #[arg(short, long, default_value = "127.0.0.1")]
     ip: String,
-    /// The port number in the form of xxxx
-    #[arg(short, long)]
-    port: String,
+
+    /// Server port
+    #[arg(short, long, default_value = "50500")]
+    port: u16,
+
+    /// Total runtime memory budget in bytes
+    #[arg(long, default_value_t = 1024 * 1024 * 100)]
+    memory: usize,
+
+    /// Maximum number of concurrently loaded functions
+    #[arg(long, default_value_t = 100)]
+    max_functions: usize,
 }
 
-fn check_args(args: &Args) -> anyhow::Result<(Ipv4Addr, u32)> {
-    let ip_addr = Ipv4Addr::from_str(&args.ip)
-        .with_context(|| "There was an error with the given IP address")?;
-
-    let port = atoi::<u32>(args.port.as_bytes())
-        .with_context(|| "The inserted port is not a valid number")?;
-
-    let port = if port > 1 && port < 65536 {
-        port
-    } else {
-        return Err(anyhow::anyhow!("The inserted port is out of range"));
-    };
-
-    Ok((ip_addr, port))
-}
+// ─────────────────────────────────────────────────────────────────────────────
+//  Entry point
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-    let (ip_address, port) = check_args(&args)?;
+    // Initialize structured async logging.
+    // Controlled by the RUST_LOG env var (e.g. RUST_LOG=info).
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
 
-    // Per questo esempio simuliamo di avere già l'istanza:
-    let _ = Runtime::new()
-        .set_memory_size(1024 * 1024 * 100)
-        .set_max_functions(100)
+    let args = Args::parse();
+
+    let runtime = Runtime::new()
+        .set_memory_size(args.memory)
+        .set_max_functions(args.max_functions)
         .build()
         .await?;
-    let runtime = Runtime::get_runtime_ref()?;
 
-    // 2. Costruisci il Router Axum iniettando l'Arc<Runtime> come stato
+    let runtime_ref = Runtime::get_runtime_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
+
     let app = Router::new()
         .route("/users", post(register_user_handler))
         .route("/users/:user_id", delete(remove_user_handler))
         .route("/users/:user_id/modules", post(register_module_handler))
-        // .route("/users/:user_id/modules/:module_id", delete(remove_module_handler))
         .route(
             "/users/:user_id/modules/:module_id/functions",
             post(load_function_handler),
         )
-        // .route("/users/:user_id/functions/:function_id", delete(unload_function_handler))
-        // .route("/users/:user_id/functions/:function_id/stop", post(stop_function_handler))
         .route(
             "/users/:user_id/functions/:function_id/exec",
             post(exec_function_handler),
         )
-        .with_state(runtime); // L'istanza clonata dell'Arc viene passata qui
+        .with_state(runtime_ref);
 
-    // 3. Avvia il server
-    let listener = tokio::net::TcpListener::bind(&format!("{}:{}", ip_address, port)).await?;
-    println!("Limes Server started on {}", listener.local_addr()?);
+    let addr = format!("{}:{}", args.ip, args.port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    info!(address = %listener.local_addr()?, "Limes server started");
 
     axum::serve(listener, app).await?;
-
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn internal_error(e: anyhow::Error) -> (StatusCode, String) {
+    error!(error = %e, "Internal server error");
+    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }

@@ -1,54 +1,76 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use limes::runtime::Runtime;
-use std::fs::File;
-use std::io::{BufReader, Read};
-use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+use tracing::info;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CLI
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(
+    version,
+    about = "limes-run — execute a single Wasm module and print the result"
+)]
 struct Args {
+    /// Path to the .wasm component file
     #[arg(short = 'p', long)]
     file_path: PathBuf,
+
+    /// Argument string passed to the Wasm `run` function
     #[arg(short, long)]
     func_arg: String,
-    #[arg(short, long)]
-    total_memory: usize,
-    #[arg(short, long)]
+
+    /// Memory budget for the function (bytes)
+    #[arg(short, long, default_value_t = 1024 * 1024 * 2)]
+    memory: usize,
+
+    /// Maximum number of functions (unused for single-run, kept for API compat)
+    #[arg(long, default_value_t = 10)]
     max_functions: usize,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
 
+    let args = Args::parse();
     let wasm_bytes = load_bytes(&args.file_path)?;
 
     let rt = Runtime::new()
-        .set_memory_size(args.total_memory)
+        .set_memory_size(args.memory * 2 + 1024 * 1024 * 10) // a bit more than the function
         .set_max_functions(args.max_functions)
         .build()
         .await
-        .unwrap();
+        .context("Failed to initialize the runtime")?;
 
     let user_id = rt
         .register_user()
         .await
-        .context("Failed to register the user")?;
+        .context("Failed to register user")?;
+
     let module_id = rt
         .register_module(&user_id, &wasm_bytes)
         .await
-        .context("Failed to register the module")?;
+        .context("Failed to register the Wasm module")?;
+
     let function_id = rt
         .load_function(
             &user_id,
             &module_id,
-            1024 * 1024 * 2,
-            Ipv4Addr::new(127, 0, 0, 1),
-            "No name".to_string(),
-            "No input description".to_string(),
-            "No description".to_string(),
+            args.memory,
+            "function".into(),
+            "raw string".into(),
+            "executed via limes-run".into(),
         )
         .await
         .context("Failed to load the function")?;
@@ -58,28 +80,26 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to execute the function")?;
 
-    println!("Function output: {}", result);
+    info!(result, "Function completed");
+    println!("{result}");
 
-    // Cleaning
+    // Cleanup
     rt.unload_function(&user_id, &function_id)
         .await
-        .context("Failed to unload the function")?;
+        .context("Failed to unload function")?;
     rt.remove_module(&user_id, &module_id)
         .await
-        .context("Failed to unload the module")?;
-    if !rt.remove_user(&user_id).await {
-        return Err(anyhow::anyhow!("Failed to remove the user"));
-    };
+        .context("Failed to remove module")?;
+    rt.remove_user(&user_id).await;
 
     Ok(())
 }
 
-fn load_bytes(path: &Path) -> anyhow::Result<Vec<u8>> {
-    let file = File::open(path).context("No file found with path: {path}")?;
-    let mut reader = BufReader::new(file);
-    let mut buffer = vec![];
-    reader
-        .read_to_end(&mut buffer)
-        .context("Could not read the file")?;
-    Ok(buffer)
+// ─────────────────────────────────────────────────────────────────────────────
+//  Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn load_bytes(path: &Path) -> Result<Vec<u8>> {
+    std::fs::read(path)
+        .with_context(|| format!("Could not read file: {}", path.display()))
 }

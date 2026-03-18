@@ -1,26 +1,65 @@
-import requests
+"""
+Limes Integration Test
+======================
+Tests the full flow:
+  1. Start the Limes server (requires: ollama serve + ollama run llama3.2:3b)
+  2. Register a user.
+  3. Load the `calculator` and `agent_executor` Wasm modules.
+  4. Load functions from each module.
+  5. Execute a math query through the agent (which uses the calculator as a tool).
+  6. Clean up all allocated resources.
+
+Run with:
+    source .venv/bin/activate
+    python main.py
+"""
+
+from __future__ import annotations
+
 import sys
-from typing import Dict
+import textwrap
+from pathlib import Path
+from typing import Any
+
+import requests
 
 
-# ==========================================
-#  Client API
-# ==========================================
+# ─────────────────────────────────────────────────────────────────────────────
+#  Server URL and Wasm paths
+# ─────────────────────────────────────────────────────────────────────────────
+
+BASE_URL = "http://localhost:50500"
+WASM_DIR = Path(__file__).parent / "wasm_files"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  RuntimeAPIClient
+# ─────────────────────────────────────────────────────────────────────────────
+
 class RuntimeAPIClient:
-    def __init__(self, base_url: str):
-        self.base_url = base_url
+    """Thin Python wrapper around the Limes REST API."""
+
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.session = requests.Session()
+
+    # ── Users ────────────────────────────────────────────────────────────────
 
     def create_user(self) -> str:
-        res = requests.post(f"{self.base_url}/users")
+        """Register a new user; returns the assigned user_id."""
+        res = self.session.post(f"{self.base_url}/users")
         res.raise_for_status()
         return res.json()["user_id"]
 
     def remove_user(self, user_id: str) -> bool:
-        res = requests.delete(f"{self.base_url}/users/{user_id}")
+        res = self.session.delete(f"{self.base_url}/users/{user_id}")
         return res.status_code == 200
 
-    def register_module(self, user_id: str, wasm_bytes: bytes) -> str:
-        res = requests.post(
+    # ── Modules ──────────────────────────────────────────────────────────────
+
+    def register_module(self, user_id: str, wasm_bytes: bytes) -> int:
+        """Upload a Wasm binary; returns the module_id (u32)."""
+        res = self.session.post(
             f"{self.base_url}/users/{user_id}/modules",
             data=wasm_bytes,
             headers={
@@ -31,16 +70,35 @@ class RuntimeAPIClient:
         res.raise_for_status()
         return res.json()["module_id"]
 
-    def load_function(self, user_id: str, module_id: str, config: Dict) -> str:
-        res = requests.post(
+    # ── Functions ────────────────────────────────────────────────────────────
+
+    def load_function(
+        self,
+        user_id: str,
+        module_id: int,
+        *,
+        function_memory_size: int,
+        function_name: str,
+        function_input_description: str,
+        description: str,
+    ) -> str:
+        """Instantiate a function from a module; returns the function_id."""
+        payload: dict[str, Any] = {
+            "function_memory_size": function_memory_size,
+            "function_name": function_name,
+            "function_input_description": function_input_description,
+            "description": description,
+        }
+        res = self.session.post(
             f"{self.base_url}/users/{user_id}/modules/{module_id}/functions",
-            json=config,
+            json=payload,
         )
         res.raise_for_status()
         return res.json()["function_id"]
 
     def exec_function(self, user_id: str, function_id: str, args: str) -> str:
-        res = requests.post(
+        """Execute a loaded function and return the string result."""
+        res = self.session.post(
             f"{self.base_url}/users/{user_id}/functions/{function_id}/exec",
             data=args,
             headers={"Content-Type": "text/plain"},
@@ -49,71 +107,106 @@ class RuntimeAPIClient:
         return res.json()["result"]
 
 
-def load_wasm_files(wasm_path: str):
-    print("-> Loading WASM files")
-    try:
-        with open(wasm_path, "rb") as f:
-            wasm_bytes = f.read()
-            print(f"\n -> Loaded file: {wasm_path}")
-    except FileNotFoundError:
-        print(f"-> File not found: {wasm_path}")
+# ─────────────────────────────────────────────────────────────────────────────
+#  Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_wasm(name: str) -> bytes:
+    path = WASM_DIR / name
+    if not path.exists():
+        print(f"[ERROR] Wasm file not found: {path}")
         sys.exit(1)
-    return wasm_bytes
+    data = path.read_bytes()
+    print(f"  Loaded {name} ({len(data):,} bytes)")
+    return data
 
 
-# ==========================================
-# Main Test
-# ==========================================
+def separator(title: str = "") -> None:
+    width = 60
+    if title:
+        print(f"\n{'─' * 4} {title} {'─' * (width - len(title) - 6)}")
+    else:
+        print("─" * width)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Main test flow
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    client = RuntimeAPIClient(BASE_URL)
+
+    # ── Step 1: Load Wasm binaries ───────────────────────────────────────────
+    separator("Loading Wasm files")
+    agent_bytes = load_wasm("agent_executor.wasm")
+    calculator_bytes = load_wasm("calculator.wasm")
+
+    # ── Step 2: Register user ────────────────────────────────────────────────
+    separator("User")
+    user_id = client.create_user()
+    print(f"  user_id = {user_id}")
+
+    try:
+        # ── Step 3: Register modules ─────────────────────────────────────────
+        separator("Modules")
+        agent_module_id = client.register_module(user_id, agent_bytes)
+        print(f"  agent_executor module_id   = {agent_module_id}")
+        calculator_module_id = client.register_module(user_id, calculator_bytes)
+        print(f"  calculator    module_id   = {calculator_module_id}")
+
+        # ── Step 4: Load functions ───────────────────────────────────────────
+        separator("Functions")
+        calculator_fn_id = client.load_function(
+            user_id,
+            calculator_module_id,
+            function_memory_size=1024 * 1024 * 2,
+            function_name="calculator",
+            function_input_description=(
+                'Space-separated math expression, e.g. "5 * 5 - 2 + 7"'
+            ),
+            description="Evaluates a simple arithmetic expression and returns the result as a string.",
+        )
+        print(f"  calculator function_id = {calculator_fn_id}")
+
+        agent_fn_id = client.load_function(
+            user_id,
+            agent_module_id,
+            function_memory_size=1024 * 1024 * 2,
+            function_name="agent",
+            function_input_description="Plain-text question or task for the LLM agent.",
+            description=(
+                "An LLM agent that can discover and invoke user-defined tools "
+                "to answer questions or execute tasks."
+            ),
+        )
+        print(f"  agent function_id     = {agent_fn_id}")
+
+        # ── Step 5: Smoke-test the calculator directly ───────────────────────
+        separator("Calculator smoke test")
+        expr = "5 * 5 - 2 + 7"
+        calc_result = client.exec_function(user_id, calculator_fn_id, expr)
+        print(f"  {expr} = {calc_result}")
+        assert calc_result == "30", f"Unexpected result: {calc_result!r}"
+        print("  ✓ Calculator assertion passed")
+
+        # ── Step 6: Agent query that exercises the calculator tool ────────────
+        separator("Agent integration test")
+        query = (
+            "Use the calculator tool to evaluate: 5 * 5 - 2 + 7 - 16 / 4 + 2"
+        )
+        print(f"  Query: {query}")
+        answer = client.exec_function(user_id, agent_fn_id, query)
+        print(f"  Agent answer:\n{textwrap.indent(answer, '    ')}")
+
+    finally:
+        # ── Step 7: Cleanup ──────────────────────────────────────────────────
+        separator("Cleanup")
+        removed = client.remove_user(user_id)
+        print(f"  User {user_id} removed: {removed}")
+
+    separator()
+    print("Integration test completed successfully.")
+
+
 if __name__ == "__main__":
-    BASE_URL = "http://localhost:50500"
-    BASE_WASM_FOLDER = (
-        "/home/viktor/Desktop/agentic_limes/limes/limes/integration_test/wasm_files/"
-    )
-
-    api_client = RuntimeAPIClient(BASE_URL)
-
-    # Load WASM files
-    wasm_agent_bytes = load_wasm_files(BASE_WASM_FOLDER + "agent_executor.wasm")
-    wasm_calculator_bytes = load_wasm_files(BASE_WASM_FOLDER + "calculator.wasm")
-
-    # Get user id
-    user_id = api_client.create_user()
-    print(f"-> Created user with id: {user_id}")
-
-    # Load modules
-    agent_module_id = api_client.register_module(user_id, wasm_agent_bytes)
-    print(f"-> Loaded agent module with id: {agent_module_id}")
-    calculator_module_id = api_client.register_module(user_id, wasm_calculator_bytes)
-    print(f"-> Loaded calculator module with id: {calculator_module_id}")
-
-    # Load functions
-    agent_func_config = {
-        "function_memory_size": 1024 * 1024 * 2,
-        "tap_ip": "127.0.0.1",
-        "function_name": "agent",
-        "function_input_description": "input field of this function is a string with the question/task for the agent",
-        "description": "This function allow the interaction with an agent which can answer to questions or execute tasks",
-    }
-    agent_function_id = api_client.load_function(
-        user_id, agent_module_id, agent_func_config
-    )
-    print(f"-> Loaded agent function with id: {agent_function_id}")
-
-    calculator_function_id = {
-        "function_memory_size": 1024 * 1024 * 2,
-        "tap_ip": "127.0.0.1",
-        "function_name": "calculator",
-        "function_input_description": 'the input must be formatted as list of integer numbers with the operator, like the example in the quotes "num * num - num + num"',
-        "description": "This function is a calculator for a simple math expressions",
-    }
-    calculator_function_id = api_client.load_function(
-        user_id, calculator_module_id, calculator_function_id
-    )
-    print(f"-> Loaded calculator function with id: {calculator_function_id}")
-
-    # Exec a query
-    query = "Can you use the calculator tool and give me the result of the following expression: 5 * 5 - 2 + 7 - 16 / 4 + 2"
-    answer = api_client.exec_function(user_id, agent_function_id, query)
-    print(f"ANSWER: {answer}")
-
-    # Unload allocated resources
+    main()
