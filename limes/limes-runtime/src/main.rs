@@ -163,8 +163,8 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let runtime = Runtime::new()
-        .set_memory_size(args.memory)
+    Runtime::runtime_builder()
+        .memory_size(args.memory)
         .set_max_functions(args.max_functions)
         .build()
         .await?;

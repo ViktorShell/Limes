@@ -3,8 +3,9 @@ name = "exec_rust_lambda_function"
 version = "0.1.0"
 edition = "2024"
 
+[dependencies]
+wit-bindgen = "0.54.0"
+limes-macro = { path = "/home/viktor/Desktop/agentic_limes/limes/limes/limes-macro" }
+
 [lib]
 crate-type = ["cdylib"]
-
-[dependencies]
-wit-bindgen = "0.41.0"

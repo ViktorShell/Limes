@@ -72,7 +72,7 @@ pub struct Runtime {
 
 impl Runtime {
     /// Returns a builder with sensible defaults (100 MiB, 100 functions).
-    pub fn new() -> RuntimeBuilder {
+    pub fn runtime_builder() -> RuntimeBuilder {
         RuntimeBuilder::default()
     }
 
@@ -84,11 +84,9 @@ impl Runtime {
     // ─── User management ─────────────────────────────────────────────────────
 
     pub async fn register_user(&self) -> anyhow::Result<UserId> {
+        let mut user_guard = self.users.write().await;
         let user_id = uuid::Uuid::new_v4().to_string();
-        self.users
-            .write()
-            .await
-            .insert(user_id.clone(), UserModules::default());
+        user_guard.insert(user_id.clone(), UserModules::default());
         info!(user_id, "User registered");
         Ok(user_id)
     }
@@ -270,13 +268,19 @@ impl Runtime {
         &self,
         user_id: &UserId,
     ) -> anyhow::Result<Vec<Arc<FunctionHandler>>> {
-        let users = self.users.read().await;
-        let user_modules = users
+        let user_guard = self.users.read().await;
+        dbg!(&user_guard);
+        println!("HERE IT IS");
+        println!("{user_id}");
+        let user_modules = user_guard
             .get(user_id)
-            .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
+            .ok_or(anyhow::anyhow!("Runtime: User not found"))?;
+        dbg!(&user_modules);
 
-        let functions = user_modules.loaded_functions.read().await;
-        Ok(functions.values().cloned().collect())
+        let user_func_guard = user_modules.loaded_functions.read().await;
+        let func_arr: Vec<Arc<FunctionHandler>> = user_func_guard.values().cloned().collect();
+
+        Ok(func_arr)
     }
 
     // ─── Internal ────────────────────────────────────────────────────────────
@@ -308,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn user_registration_and_removal() {
-        let rt = Runtime::new().build().await.unwrap();
+        let rt = Runtime::runtime_builder().build().await.unwrap();
         let u1 = rt.register_user().await.unwrap();
         let u2 = rt.register_user().await.unwrap();
         assert!(!u1.is_empty());
@@ -321,7 +325,7 @@ mod tests {
 
     #[tokio::test]
     async fn module_registration_and_removal() {
-        let rt = Runtime::new().build().await.unwrap();
+        let rt = Runtime::runtime_builder().build().await.unwrap();
         let user = rt.register_user().await.unwrap();
         let bytes = load_bytes("exec_rust_lambda_function.wasm");
         let mid = rt.register_module(&user, &bytes).await.unwrap();
@@ -331,10 +335,10 @@ mod tests {
 
     #[tokio::test]
     async fn load_and_exec_function() {
-        let rt = Runtime::new().build().await.unwrap();
+        let rt = Runtime::runtime_builder().build().await.unwrap();
         let user = rt.register_user().await.unwrap();
 
-        let sorter_bytes = load_bytes("multiple_function_exec.wasm");
+        let sorter_bytes = load_bytes("sorter.wasm");
         let op_bytes = load_bytes("op_a_b.wasm");
 
         let mid_sort = rt.register_module(&user, &sorter_bytes).await.unwrap();
@@ -355,13 +359,12 @@ mod tests {
         let fid_op = rt
             .load_function(
                 &user,
-                mid_op,
+                &mid_op,
                 1024 * 1024 * 2,
                 "calc".into(),
                 "expression".into(),
-                "math",
+                "math".into(),
             )
-            .into()
             .await
             .unwrap();
 
@@ -376,7 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_infinite_loop_via_runtime() {
-        let rt = Arc::new(Runtime::new().build().await.unwrap());
+        let rt = Runtime::runtime_builder().build().await.unwrap();
         let user = rt.register_user().await.unwrap();
         let bytes = load_bytes("stop_infinite_loop.wasm");
         let mid = rt.register_module(&user, &bytes).await.unwrap();
@@ -404,5 +407,34 @@ mod tests {
 
         let result = rt.exec_function(&user, &fid, "").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn interact_with_agent() {
+        let rt = Runtime::runtime_builder().build().await.unwrap();
+        let user = rt.register_user().await.unwrap();
+        dbg!(&user);
+        let bytes = load_bytes("interact_with_agent.wasm");
+        let mid = rt.register_module(&user, &bytes).await.unwrap();
+        let fid = rt
+            .load_function(
+                &user,
+                &mid,
+                1024 * 1024 * 2,
+                "interact_with_agent".into(),
+                "A question or task for an ai agent".into(),
+                "Allows the interaction with an ai agent which can answer to questions and execute tasks".into()
+            ).await.unwrap();
+
+        // let answer = rt.exec_function(&user, &fid, "Tell me the name of the capital of Italy, answer with just the name of the city in small case").await.unwrap();
+        let answer = rt
+            .exec_function(
+                &user,
+                &fid,
+                "Which is the capital of Italy, answer with only the city name in small cases",
+            )
+            .await
+            .unwrap();
+        assert_eq!("rome", answer);
     }
 }

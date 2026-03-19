@@ -116,16 +116,19 @@ impl ExecutorImports for LambdaState {
     async fn invoke_agent(&mut self, input: String) -> String {
         debug!(user_id = %self.user_id, "Guest invoked invoke_agent");
 
-        let agent =
-            match LimesAgent::new_agent("https://127.0.0.1", "llama3.2:3b", self.user_id.clone())
-                .await
-            {
-                Ok(agent) => agent,
-                Err(e) => {
-                    error!(error = %e, "Failed to initialize LimesAgent");
-                    return format!("AgentError: agent initialization failed - {e}");
-                }
-            };
+        let agent = match LimesAgent::new_agent(
+            "http://127.0.0.1:11434",
+            "llama3.2:3b",
+            self.user_id.clone(),
+        )
+        .await
+        {
+            Ok(agent) => agent,
+            Err(e) => {
+                error!(error = %e, "Failed to initialize LimesAgent");
+                return format!("AgentError: agent initialization failed - {e}");
+            }
+        };
 
         match agent.invoke_agent(input).await {
             Ok(answer) => {
@@ -338,7 +341,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_function_execution() {
         let engine = make_engine();
-        let lambda = Arc::new(make_lambda(&engine, "multiple_function_exec.wasm", MEM_2MIB).await);
+        let lambda = Arc::new(make_lambda(&engine, "sorter.wasm", MEM_2MIB).await);
 
         let (r1, r2) = tokio::join!(
             {
@@ -354,4 +357,13 @@ mod tests {
         assert_eq!("[a,b,c,d,e,f]", r1.unwrap().unwrap());
         assert_eq!("[a,b,c,d,e]", r2.unwrap().unwrap());
     }
+
+    // #[tokio::test]
+    // async fn intercat_with_the_agent() {
+    //     let engine = make_engine();
+    //     let lambda = Arc::new(make_lambda(&engine, "interact_with_agent.wasm", MEM_2MIB).await);
+    //     let result = lambda.run("").await.unwrap();
+    //     dbg!(&result);
+    //     assert!(!result.is_empty())
+    // }
 }

@@ -15,38 +15,38 @@ path = "src/limes-run.rs"
 
 [dependencies]
 # Web server
-axum        = "0.7"
-bytes       = "1"
+axum = "0.7"
+bytes = "1"
 
 # CLI
-clap        = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 
 # Error handling
-anyhow      = "1"
-thiserror   = "2"
+anyhow = "1"
+thiserror = "2"
 
 # Async runtime
-tokio       = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 
 # Logging (structured async logging)
-tracing             = "0.1"
-tracing-subscriber  = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Serde
-serde       = { version = "1", features = ["derive"] }
-serde_json  = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # Unique IDs
-nanoid      = "0.4"
-uuid        = { version = "1", features = ["v4"] }
+nanoid = "0.4"
+uuid = { version = "1", features = ["v4"] }
 
 # Wasm hash
-crc32fast   = "1"
+crc32fast = "1"
 
 # LLM agent
-rig-core    = "0.32.0"
+rig-core = "0.32.0"
 
 # WebAssembly runtime
-wasmtime        = "42.0.1"
-wasmtime-wasi   = "42.0.1"
+wasmtime = "42.0.1"
+wasmtime-wasi = "42.0.1"

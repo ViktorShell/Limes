@@ -10,9 +10,11 @@ use tracing::{debug, error, info};
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
-use crate::runtime::{Runtime, types::{FunctionId, UserId}};
+use crate::runtime::{
+    types::{FunctionId, UserId},
+    Runtime,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  LimesAgent — LLM-backed agent with access to user-defined tools
@@ -66,8 +68,7 @@ impl LimesAgent<ollama::CompletionModel> {
             let uid = user_id.clone();
             let fid = function_id.clone();
             Box::pin(async move {
-                let rt = Runtime::get_runtime_ref()
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let rt = Runtime::get_runtime_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
                 let funcs = rt.get_user_functions(&uid).await?;
                 let handler = funcs
                     .iter()
@@ -94,8 +95,7 @@ pub struct UserDefinedFunctions {
 
 impl UserDefinedFunctions {
     pub async fn build(user_id: &UserId) -> Result<Self> {
-        let rt = Runtime::get_runtime_ref()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let rt = Runtime::get_runtime_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
         let funcs = rt.get_user_functions(user_id).await?;
 
         let entries = funcs
@@ -161,7 +161,9 @@ pub struct ExecuteFunction {
 
 impl ExecuteFunction {
     pub fn new(user_id: &str) -> Self {
-        Self { user_id: user_id.to_string() }
+        Self {
+            user_id: user_id.to_string(),
+        }
     }
 }
 
@@ -200,11 +202,9 @@ impl Tool for ExecuteFunction {
             self.user_id.clone(),
             args.func_id.clone(),
         );
-        (closure)(args.input)
-            .await
-            .map_err(|e| {
-                error!(error = %e, func_id = args.func_id, "ExecuteFunction tool error");
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-            })
+        (closure)(args.input).await.map_err(|e| {
+            error!(error = %e, func_id = args.func_id, "ExecuteFunction tool error");
+            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+        })
     }
 }

@@ -1,33 +1,8 @@
-wit_bindgen::generate!({
-    inline: r"
-        package component:run;
+use limes_macro::limes_run;
 
-        interface limes-api {
-            invoke-agent: func(args: string) -> string;
-        }
-
-        interface run {
-            run: func(args: string) -> string;
-        }
-
-        world runnable {
-            import limes-api;
-            export run;
-        }
-    "
-});
-
-//  crate exported  component:run -> run interface -> Guest
-use crate::exports::component::run::run::Guest;
-
-struct Component;
-
-impl Guest for Component {
-    fn run(args: String) -> String {
-        let mut local_str = String::from(args);
-        local_str.push_str("### TEST ###");
-        return local_str;
-    }
+#[limes_run]
+fn run(args: String) -> String {
+    let mut lm_args = args.clone();
+    lm_args.push_str("### TEST ###");
+    lm_args
 }
-
-export!(Component);

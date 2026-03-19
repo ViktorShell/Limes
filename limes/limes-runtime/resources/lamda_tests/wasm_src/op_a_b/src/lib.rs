@@ -1,38 +1,23 @@
-wit_bindgen::generate!({
-    inline: r"
-        package component:run;
+use atoi::atoi;
+use limes_macro::limes_run;
 
-        interface run {
-            run: func(args: string) -> string;
-        }
+#[limes_run]
+fn run(input: String) -> String {
+    let mut iter = input.split_ascii_whitespace();
+    let ascii_a = iter.next().unwrap();
+    let ascii_op = iter.next().unwrap();
+    let ascii_b = iter.next().unwrap();
 
-        world runnable {
-            export run;
-        }
-    "
-});
+    let a = atoi::<i32>(ascii_a.as_bytes()).unwrap();
+    let b = atoi::<i32>(ascii_b.as_bytes()).unwrap();
 
-//  crate exported  component:run -> run interface -> Guest
-use crate::exports::component::run::run::Guest;
+    let exec = match ascii_op {
+        "+" => a + b,
+        "-" => a - b,
+        "*" => a * b,
+        "/" => a / b,
+        _ => 0,
+    };
 
-struct Component;
-
-impl Guest for Component {
-    fn run(args: String) -> String {
-        let args: Vec<&str> = args.split(' ').collect();
-        let a = args[0].parse::<i32>().unwrap();
-        let b = args[2].parse::<i32>().unwrap();
-        let op = args[1];
-        let result = match op {
-            "+" => a + b,
-            "-" => a - b,
-            "/" => a / b,
-            "*" => a * b,
-            _ => 0,
-        };
-
-        result.to_string()
-    }
+    exec.to_string()
 }
-
-export!(Component);

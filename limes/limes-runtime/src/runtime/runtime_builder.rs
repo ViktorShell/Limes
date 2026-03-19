@@ -1,14 +1,11 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::collections::HashMap;
-
-use anyhow::Context;
+use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 use wasmtime::{Config, Engine};
 
-use super::{Runtime, RUNTIME};
-use crate::runtime::types::*;
+use super::Runtime;
 
 /// Builder for [`Runtime`] with a fluent API.
 ///
@@ -28,7 +25,7 @@ impl Default for RuntimeBuilder {
 }
 
 impl RuntimeBuilder {
-    pub fn memory_size(mut self, bytes: usize) -> Self {
+    pub fn memory_size(&mut self, bytes: usize) -> &mut Self {
         self.memory_size = bytes;
         self
     }
@@ -45,14 +42,16 @@ impl RuntimeBuilder {
     }
 
     /// Compile the wasmtime [`Engine`] and initialize the global singleton.
-    pub async fn build(self) -> anyhow::Result<Arc<Runtime>> {
+    pub async fn build(&mut self) -> anyhow::Result<Arc<Runtime>> {
         let engine = Engine::new(
             Config::new()
                 .wasm_component_model(true)
                 .epoch_interruption(true)
                 .cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize),
         )
-        .map_err(|e| anyhow::anyhow!("RuntimeBuilder: failed to initialize the Wasmtime engine: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("RuntimeBuilder: failed to initialize the Wasmtime engine: {e}")
+        })?;
 
         let runtime = Arc::new(Runtime {
             memory_size: self.memory_size,

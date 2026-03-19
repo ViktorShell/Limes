@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let wasm_bytes = load_bytes(&args.file_path)?;
 
-    let rt = Runtime::new()
+    let rt = Runtime::runtime_builder()
         .set_memory_size(args.memory * 2 + 1024 * 1024 * 10) // a bit more than the function
         .set_max_functions(args.max_functions)
         .build()
@@ -100,6 +100,5 @@ async fn main() -> Result<()> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn load_bytes(path: &Path) -> Result<Vec<u8>> {
-    std::fs::read(path)
-        .with_context(|| format!("Could not read file: {}", path.display()))
+    std::fs::read(path).with_context(|| format!("Could not read file: {}", path.display()))
 }

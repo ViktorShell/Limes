@@ -45,10 +45,12 @@ impl UserModules {
         let component = Component::from_binary(engine, bytes)
             .map_err(|e| anyhow::anyhow!("UserModules: failed to compile component: {e}"))?;
 
-        self.wasm_modules
-            .write()
-            .await
-            .insert(key, ModuleHandler { component: Arc::new(component) });
+        self.wasm_modules.write().await.insert(
+            key,
+            ModuleHandler {
+                component: Arc::new(component),
+            },
+        );
 
         Ok(key)
     }

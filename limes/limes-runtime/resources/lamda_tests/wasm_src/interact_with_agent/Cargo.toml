@@ -1,12 +1,11 @@
 [package]
-name = "op_a_b"
+name = "interact_with_agent"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 wit-bindgen = "0.54.0"
 limes-macro = { path = "/home/viktor/Desktop/agentic_limes/limes/limes/limes-macro" }
-atoi = "2.0.0"
 
 [lib]
 crate-type = ["cdylib"]
