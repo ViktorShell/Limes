@@ -165,6 +165,9 @@ impl Lambda {
     pub async fn run(&self, args: &str) -> anyhow::Result<String> {
         debug!("Lambda::run invoked");
 
+        // FIX: REMOVE
+        info!("LAMBDA RUN: {}", args);
+
         let engine = self.component.engine();
         let mut linker = Linker::<LambdaState>::new(engine);
 

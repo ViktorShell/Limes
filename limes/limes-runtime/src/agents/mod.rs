@@ -6,7 +6,7 @@ use rig::completion::{CompletionModel, Prompt, ToolDefinition};
 use rig::providers::ollama;
 use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -16,8 +16,8 @@ use crate::runtime::{
     Runtime,
 };
 
-// Limes Agent
 
+/// Limes Agent
 pub struct LimesAgent<M: CompletionModel> {
     agent: Agent<M>,
 }
@@ -30,34 +30,23 @@ impl LimesAgent<ollama::CompletionModel> {
             .build()
             .context("LimesAgent: failed to build Ollama client")?;
 
-        let list_tool = UserDefinedFunctions::build(&user_id).await?;
-        let exec_tool = ExecuteUserDefinedFunction::new(&user_id);
+        let list_tool = ListFunctions::build(&user_id).await?;
+        let exec_tool = ExecuteFunction::new(&user_id);
 
-        let system_prompt = r#"
-You are a task assistant, the first thing you MUST DO is to call the UserDefinedFunctions which gives you the list, as a string, of all usable functions, those functions can be called only by calling the ExecuteUserDefinedFunction and giving it the Function Id of the wanted function and the actual input for the function.
-So once you have called the UserDefinedFunctions tool you can assist the user with the tasks he requires.
-        "#;
-
-        //         let system_prompt = r#"
-        // Assistant Task: Execute user-defined tools precisely.
-        // 1. You MUST Use `UserDefinedFunctions` to discover tools.
-        // 2. You MUST Use `ExecuteUserDefinedFunction` for calls, strictly following the specified input schema.
-        // Only use these tools.
-        // "#;
-
-        let force_tool = rig::completion::message::ToolChoice::Specific {
-            function_names: vec![
-                "UserDefinedFunctions".to_string(),
-                "ExecuteUserDefinedFunction".to_string(),
-            ],
-        };
+        let system_prompt = 
+            "You are a helpful assistant with access to a dynamic function registry. \
+             When asked to perform a calculation or run a function:\n\
+             1. ALWAYS call list_functions first to see what is available and note the exact function_id values.\n\
+             2. Then call execute_function using the exact function_id from step 1 and an input object \
+                matching that function's input_structure.\n\
+             3. Return the result clearly to the user.\n\
+             Never guess function_id values — always retrieve them from list_functions.";
 
         let agent = client
             .agent(model)
             .preamble(system_prompt)
             .tool(list_tool)
             .tool(exec_tool)
-            .tool_choice(force_tool)
             .build();
 
         info!(
@@ -114,78 +103,97 @@ Agent prompt received:
 type PinnedFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 type ExecClosure = Box<dyn Fn(String) -> PinnedFuture<Result<String>> + Send + Sync>;
 
-// Gives the list of all user defined tools to the LLM
-pub struct UserDefinedFunctions {
-    /// (id, name, description, input_description)
-    entries: Vec<(FunctionId, String, String, String)>,
+/// Metadata for the model to rappresent the functions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionMeta {
+    pub function_name: String,
+    pub function_id: String,
+    pub function_description: String,
+    // NOTE: Foundamental for the model understandin or it will allucinate
+    pub input_structure: Value,
 }
 
-impl UserDefinedFunctions {
+/// Input for the list_functions
+#[derive(Serialize, Deserialize)]
+pub struct ListFunctionsInput {}
+
+/// List of the user defined functions
+#[derive(Serialize, Deserialize)]
+pub struct ListFunctionsOutput {
+    functions: Vec<FunctionMeta>,
+}
+
+// Gives the list of all user defined tools to the LLM
+pub struct ListFunctions {
+    functions: Vec<FunctionMeta>,
+}
+
+impl ListFunctions {
     pub async fn build(user_id: &UserId) -> Result<Self> {
         let rt = Runtime::get_runtime_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
         let funcs = rt.get_user_functions(user_id).await?;
 
-        let entries = funcs
+        let functions = funcs
             .iter()
-            .map(|f| {
-                (
-                    f.function_id.clone(),
-                    f.function_name.clone(),
-                    f.description.clone(),
-                    f.function_input_description.clone(),
-                )
+            .map(|f| FunctionMeta {
+                function_name: f.function_name.clone(),
+                function_id: f.function_id.clone(),
+                function_description: f.description.clone(),
+                // NOTE: Foundamental that the input structure is described as a json
+                input_structure: json!(f.function_input_description.clone()),
             })
             .collect();
 
-        Ok(Self { entries })
+        Ok(Self { functions })
     }
 }
 
-impl Tool for UserDefinedFunctions {
-    const NAME: &'static str = "UserDefinedFunctions";
+impl Tool for ListFunctions {
+    const NAME: &'static str = "list_functions";
     type Error = std::io::Error;
-    type Args = ();
-    type Output = String;
+    type Args = ListFunctionsInput;
+    type Output = ListFunctionsOutput;
 
     async fn definition(&self, _: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.to_string(),
-            description: "Returns a list of all user-defined functions with their IDs, \
-                          names, descriptions, and expected input formats."
-                .to_string(),
-            parameters: json!({ "type": "object", "properties": {} }),
+            description: "Returns the list of all available user-defined functions. \
+                          Each entry contains function_name, function_id, and input_structure (JSON Schema). \
+                          You MUST call this tool first to discover which functions exist and what their \
+                          function_id values are before calling execute_function.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "required": [],
+            }),
         }
     }
 
-    async fn call(&self, _: Self::Args) -> std::result::Result<Self::Output, Self::Error> {
-        let output = self
-            .entries
-            .iter()
-            .map(|(id, name, desc, inp)| {
-                format!(
-                    "FunctionName: {name}\nFunctionId: {id}\nDescription: {desc}\nInputDescription: {inp}\n"
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        info!("USER_DEFINED_FUNCTIONS: {output}");
-        Ok(output)
+    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let functions = self.functions.clone();
+        Ok(ListFunctionsOutput { functions })
     }
+}
+
+/// Tool Executor
+pub struct ExecuteFunction {
+    user_id: String,
 }
 
 // Execute the user defined tool by the LLM invoketion
 #[derive(Serialize, Deserialize)]
-pub struct ExecArgs {
-    pub func_id: String,
-    pub input: String,
+pub struct ExecuteFunctionInput {
+    pub function_id: String,
+    /// NOTE: Important, MUST match the input_structure schema for that function
+    pub input: Value,
 }
 
-pub struct ExecuteUserDefinedFunction {
-    user_id: String,
+#[derive(Serialize, Deserialize)]
+pub struct ExecuteFunctionOutput {
+    result: Value,
 }
 
-impl ExecuteUserDefinedFunction {
+impl ExecuteFunction {
     pub fn new(user_id: &str) -> Self {
         Self {
             user_id: user_id.to_string(),
@@ -193,55 +201,46 @@ impl ExecuteUserDefinedFunction {
     }
 }
 
-impl Tool for ExecuteUserDefinedFunction {
-    const NAME: &'static str = "ExecuteUserDefinedFunction";
+impl Tool for ExecuteFunction {
+    const NAME: &'static str = "execute_function";
     type Error = std::io::Error;
-    type Args = ExecArgs;
-    type Output = String;
+    type Args = ExecuteFunctionInput;
+    type Output = ExecuteFunctionOutput;
 
-    async fn definition(&self, _: String) -> ToolDefinition {
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.to_string(),
-            description: "Execute a user-defined function by its ID. \
-                          The `input` field must follow the format described in the \
-                          function's InputDescription result of the tool UserDefinedFunctions."
+            description: "Executes a user-defined function. \
+                          You must provide the exact function_id returned by list_functions \
+                          and an input object matching that function's input_structure schema. \
+                          Returns the result of the function."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "func_id": {
+                    "function_id": {
                         "type": "string",
-                        "description": "The function ID from UserDefinedFunctions from the parameter FunctionId, you MUST give only the ID."
+                        "description": "The function_id exactly as returned by list_functions"
                     },
                     "input": {
-                        "type": "string",
-                        "description": "The input string matching the function's InputDescription"
+                        "type": "object",
+                        "description": "Input parameters matching the function's input_structure schema"
                     }
                 },
-                "required": ["func_id", "input"]
+                "required": ["function_id", "input"]
             }),
         }
     }
 
+    /// NOTE: There are a bit of conversions from String to JSON and to so on.
+    /// But for now is not a big deal.
     async fn call(&self, args: Self::Args) -> std::result::Result<Self::Output, Self::Error> {
         let uid = self.user_id.clone();
-        let fid = args.func_id;
+        let fid = args.function_id;
         let input = args.input;
 
         let rt = Runtime::get_runtime_ref().unwrap();
         let funcs = rt.get_user_functions(&uid).await.unwrap();
-
-        let mut does_contains = false;
-        for func_handl in funcs.iter() {
-            if func_handl.function_id == fid {
-                does_contains = true;
-                break;
-            }
-        }
-
-        if !does_contains {
-            return Ok("ERROR: Access Denied. You MUST call `UserDefinedFunctions` first to discover valid function IDs.".to_string());
-        }
 
         let handler = funcs.iter().find(|f| f.function_id == fid).ok_or_else(|| {
             std::io::Error::new(
@@ -250,22 +249,16 @@ impl Tool for ExecuteUserDefinedFunction {
             )
         })?;
 
-        handler.lambda.run(&input).await.map_err(|_| {
+        let input_serialized = input.to_string();
+        let result = handler.lambda.run(&input_serialized).await.map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Agent: function {fid} not found".to_string(),
             )
+        })?;
+
+        Ok(ExecuteFunctionOutput {
+            result: json!(result),
         })
     }
-
-    // async fn call(&self, args: Self::Args) -> std::result::Result<Self::Output, Self::Error> {
-    //     let closure = LimesAgent::<ollama::CompletionModel>::make_exec_closure(
-    //         self.user_id.clone(),
-    //         args.func_id.clone(),
-    //     );
-    //     (closure)(args.input).await.map_err(|e| {
-    //         error!("ExecuteFunction tool error:\nfunc_id = {}", args.func_id);
-    //         std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-    //     })
-    // }
 }

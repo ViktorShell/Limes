@@ -164,10 +164,8 @@ def main() -> None:
             calculator_module_id,
             function_memory_size=1024 * 1024 * 2,
             function_name="calculator",
-            function_input_description=(
-                "Simple math solver, you must give only the numerical expression space speratered like the one in the example 5 * 5 + 2 - 7 / 12"
-            ),
-            description="Evaluates a simple arithmetic expression and returns the result as a string.",
+            function_input_description=('{"expression": "string"}'),
+            description="Evaluates a simple arithmetic expression and returns the result as a string. An example of expression is rappresented as `5 + 2 - 3 * 4 / 1`",
         )
         print(f"  calculator function_id = {calculator_fn_id}")
 
@@ -176,7 +174,7 @@ def main() -> None:
             agent_module_id,
             function_memory_size=1024 * 1024 * 2,
             function_name="agent",
-            function_input_description="Plain-text question or task for the LLM agent.",
+            function_input_description='{"ask_agent": "string"}',
             description=(
                 "An LLM agent able to answer to simple questions"
                 "to answer questions or execute tasks."
@@ -186,15 +184,15 @@ def main() -> None:
 
         # ── Step 5: Smoke-test the calculator directly ───────────────────────
         separator("Calculator smoke test")
-        expr = '{"expression": "5 * 5 - 2 + 7 - 16 / 4 + 2"}'
+        expr = '{"expression": "5 * 5 + 5 / 3 * 1"}'
         calc_result = client.exec_function(user_id, calculator_fn_id, expr)
         print(f"  {expr} = {calc_result}")
-        assert calc_result == "28", f"Unexpected result: {calc_result!r}"
+        assert calc_result == "26", f"Unexpected result: {calc_result!r}"
         print("  ✓ Calculator assertion passed")
 
         # ── Step 6: Agent query that exercises the calculator tool ────────────
         separator("Agent integration test")
-        query = f"Solve the following expression `5 * 5 - 2 + 7 - 16 / 4 + 2`"
+        query = "Use the calculator tool to solve the following expression '5 * 5 - 2 + 7 - 16 / 4 + 2'"
         print(f"  Query: {query}")
         answer = client.exec_function(user_id, agent_fn_id, query)
         print(f"  Agent answer:\n{textwrap.indent(answer, '    ')}")

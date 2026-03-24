@@ -248,6 +248,9 @@ Executing function:
         "#
         );
 
+        // FIX: REMOVE
+        println!("ARGS: {args}");
+
         let users = self.users.read().await;
         let user_modules = users
             .get(user_id)
