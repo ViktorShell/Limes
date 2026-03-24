@@ -9,7 +9,7 @@ Build the project using `cargo build --release` to obtain the executable server.
 Run the server using the follow example:
 
 ``` bash
-RUST_LOG=info cargo run --bin limes-server -- --ip {IP_ADDRESS} -p {PORT}
+cargo run --bin limes-server -- -v --ip {IP_ADDRESS} -p {PORT}
 ```
 
 Or obtain more information by executing
