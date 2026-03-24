@@ -1,15 +1,12 @@
+use log::*;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
 use wasmtime::{Config, Engine};
 
 use super::Runtime;
 
-/// Builder for [`Runtime`] with a fluent API.
-///
-/// Constructed via [`Runtime::new()`].
 pub struct RuntimeBuilder {
     pub memory_size: usize,
     pub max_functions: usize,
@@ -30,7 +27,7 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Deprecated fluent setter kept for backward compat — prefer `memory_size()`.
+    // FIX: must implement the correct memory counter
     pub fn set_memory_size(&mut self, memory_size: usize) -> &mut Self {
         self.memory_size = memory_size;
         self
@@ -41,7 +38,6 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Compile the wasmtime [`Engine`] and initialize the global singleton.
     pub async fn build(&mut self) -> anyhow::Result<Arc<Runtime>> {
         let engine = Engine::new(
             Config::new()
@@ -65,9 +61,12 @@ impl RuntimeBuilder {
         Runtime::set_global(runtime.clone());
 
         info!(
-            memory_bytes = self.memory_size,
-            max_functions = self.max_functions,
-            "Limes Runtime initialized"
+            r#"
+Limes Runtime initialized:
+    memory_size: {}
+    max_functions: {}
+        "#,
+            self.memory_size, self.max_functions
         );
 
         Ok(runtime)

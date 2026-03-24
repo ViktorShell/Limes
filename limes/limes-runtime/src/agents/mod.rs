@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use log::*;
 use rig::agent::Agent;
 use rig::client::{CompletionClient, Nothing};
 use rig::completion::{CompletionModel, Prompt, ToolDefinition};
@@ -6,7 +7,6 @@ use rig::providers::ollama;
 use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tracing::{debug, error, info};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -16,16 +16,13 @@ use crate::runtime::{
     Runtime,
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  LimesAgent — LLM-backed agent with access to user-defined tools
-// ─────────────────────────────────────────────────────────────────────────────
+// Limes Agent
 
 pub struct LimesAgent<M: CompletionModel> {
     agent: Agent<M>,
 }
 
 impl LimesAgent<ollama::CompletionModel> {
-    /// Build an agent connected to Ollama with the user's loaded functions as tools.
     pub async fn new_agent(host: &str, model: &str, user_id: UserId) -> Result<Self> {
         let client = ollama::Client::builder()
             .base_url(host)
@@ -34,31 +31,65 @@ impl LimesAgent<ollama::CompletionModel> {
             .context("LimesAgent: failed to build Ollama client")?;
 
         let list_tool = UserDefinedFunctions::build(&user_id).await?;
-        let exec_tool = ExecuteFunction::new(&user_id);
+        let exec_tool = ExecuteUserDefinedFunction::new(&user_id);
+
+        let system_prompt = r#"
+You are a task assistant, the first thing you MUST DO is to call the UserDefinedFunctions which gives you the list, as a string, of all usable functions, those functions can be called only by calling the ExecuteUserDefinedFunction and giving it the Function Id of the wanted function and the actual input for the function.
+So once you have called the UserDefinedFunctions tool you can assist the user with the tasks he requires.
+        "#;
+
+        //         let system_prompt = r#"
+        // Assistant Task: Execute user-defined tools precisely.
+        // 1. You MUST Use `UserDefinedFunctions` to discover tools.
+        // 2. You MUST Use `ExecuteUserDefinedFunction` for calls, strictly following the specified input schema.
+        // Only use these tools.
+        // "#;
+
+        let force_tool = rig::completion::message::ToolChoice::Specific {
+            function_names: vec![
+                "UserDefinedFunctions".to_string(),
+                "ExecuteUserDefinedFunction".to_string(),
+            ],
+        };
 
         let agent = client
             .agent(model)
-            .preamble(
-                "You are a helpful assistant. You have access to user-defined tools. \
-                 Use `ListUserDefinedFunctions` to discover available functions, \
-                 then use `ExecuteUserDefinedFunction` to call them with the correct input. \
-                 Follow the input format described in each function's description exactly. \
-                 Use each tool at most once unless the user explicitly asks for repetition.",
-            )
+            .preamble(system_prompt)
             .tool(list_tool)
             .tool(exec_tool)
+            .tool_choice(force_tool)
             .build();
 
-        info!(host, model, user_id, "LimesAgent initialized");
+        info!(
+            r#"
+LimesAgent initialized:
+    host: {host}
+    model: {model}
+    user_id: {user_id}
+        "#
+        );
         Ok(Self { agent })
     }
 
     pub async fn invoke_agent(&self, prompt: String) -> Result<String> {
-        debug!(prompt_len = prompt.len(), "Agent prompt received");
-        self.agent
+        debug!(
+            r#"
+Agent prompt received:
+    prompt: {prompt}
+"#
+        );
+
+        let answer = self
+            .agent
             .prompt(prompt)
             .await
-            .context("LimesAgent: prompt call failed")
+            .context("LimesAgent: prompt call failed");
+
+        // FIX: MUST REMOVE
+        let answer = answer.unwrap();
+        println!("\n\n\n{}\n\n\n", answer.clone());
+
+        Ok(answer)
     }
 
     /// Returns a boxed closure that executes a specific user function through
@@ -83,11 +114,7 @@ impl LimesAgent<ollama::CompletionModel> {
 type PinnedFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 type ExecClosure = Box<dyn Fn(String) -> PinnedFuture<Result<String>> + Send + Sync>;
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Tool: ListUserDefinedFunctions
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Lists all functions loaded for a user so the LLM can discover them.
+// Gives the list of all user defined tools to the LLM
 pub struct UserDefinedFunctions {
     /// (id, name, description, input_description)
     entries: Vec<(FunctionId, String, String, String)>,
@@ -115,7 +142,7 @@ impl UserDefinedFunctions {
 }
 
 impl Tool for UserDefinedFunctions {
-    const NAME: &'static str = "ListUserDefinedFunctions";
+    const NAME: &'static str = "UserDefinedFunctions";
     type Error = std::io::Error;
     type Args = ();
     type Output = String;
@@ -136,30 +163,29 @@ impl Tool for UserDefinedFunctions {
             .iter()
             .map(|(id, name, desc, inp)| {
                 format!(
-                    "FunctionId: {id}\nFunctionName: {name}\nDescription: {desc}\nInputDescription: {inp}\n"
+                    "FunctionName: {name}\nFunctionId: {id}\nDescription: {desc}\nInputDescription: {inp}\n"
                 )
             })
             .collect::<Vec<_>>()
             .join("\n");
+
+        info!("USER_DEFINED_FUNCTIONS: {output}");
         Ok(output)
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Tool: ExecuteUserDefinedFunction
-// ─────────────────────────────────────────────────────────────────────────────
-
+// Execute the user defined tool by the LLM invoketion
 #[derive(Serialize, Deserialize)]
 pub struct ExecArgs {
     pub func_id: String,
     pub input: String,
 }
 
-pub struct ExecuteFunction {
+pub struct ExecuteUserDefinedFunction {
     user_id: String,
 }
 
-impl ExecuteFunction {
+impl ExecuteUserDefinedFunction {
     pub fn new(user_id: &str) -> Self {
         Self {
             user_id: user_id.to_string(),
@@ -167,7 +193,7 @@ impl ExecuteFunction {
     }
 }
 
-impl Tool for ExecuteFunction {
+impl Tool for ExecuteUserDefinedFunction {
     const NAME: &'static str = "ExecuteUserDefinedFunction";
     type Error = std::io::Error;
     type Args = ExecArgs;
@@ -178,14 +204,14 @@ impl Tool for ExecuteFunction {
             name: Self::NAME.to_string(),
             description: "Execute a user-defined function by its ID. \
                           The `input` field must follow the format described in the \
-                          function's InputDescription."
+                          function's InputDescription result of the tool UserDefinedFunctions."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "func_id": {
                         "type": "string",
-                        "description": "The function ID from ListUserDefinedFunctions"
+                        "description": "The function ID from UserDefinedFunctions from the parameter FunctionId, you MUST give only the ID."
                     },
                     "input": {
                         "type": "string",
@@ -198,13 +224,48 @@ impl Tool for ExecuteFunction {
     }
 
     async fn call(&self, args: Self::Args) -> std::result::Result<Self::Output, Self::Error> {
-        let closure = LimesAgent::<ollama::CompletionModel>::make_exec_closure(
-            self.user_id.clone(),
-            args.func_id.clone(),
-        );
-        (closure)(args.input).await.map_err(|e| {
-            error!(error = %e, func_id = args.func_id, "ExecuteFunction tool error");
-            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+        let uid = self.user_id.clone();
+        let fid = args.func_id;
+        let input = args.input;
+
+        let rt = Runtime::get_runtime_ref().unwrap();
+        let funcs = rt.get_user_functions(&uid).await.unwrap();
+
+        let mut does_contains = false;
+        for func_handl in funcs.iter() {
+            if func_handl.function_id == fid {
+                does_contains = true;
+                break;
+            }
+        }
+
+        if !does_contains {
+            return Ok("ERROR: Access Denied. You MUST call `UserDefinedFunctions` first to discover valid function IDs.".to_string());
+        }
+
+        let handler = funcs.iter().find(|f| f.function_id == fid).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Agent: function {fid} not found".to_string(),
+            )
+        })?;
+
+        handler.lambda.run(&input).await.map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Agent: function {fid} not found".to_string(),
+            )
         })
     }
+
+    // async fn call(&self, args: Self::Args) -> std::result::Result<Self::Output, Self::Error> {
+    //     let closure = LimesAgent::<ollama::CompletionModel>::make_exec_closure(
+    //         self.user_id.clone(),
+    //         args.func_id.clone(),
+    //     );
+    //     (closure)(args.input).await.map_err(|e| {
+    //         error!("ExecuteFunction tool error:\nfunc_id = {}", args.func_id);
+    //         std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+    //     })
+    // }
 }

@@ -1,12 +1,11 @@
 use anyhow::Result;
-use tracing::{error, info};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use log::*;
 
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{delete, get, post},
+    routing::{delete, post},
     Json, Router,
 };
 use bytes::Bytes;
@@ -15,10 +14,7 @@ use limes::runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  DTOs
-// ─────────────────────────────────────────────────────────────────────────────
-
+// DTO's
 #[derive(Deserialize)]
 pub struct LoadFunctionPayload {
     pub function_memory_size: usize,
@@ -47,10 +43,7 @@ pub struct ExecResponse {
     pub result: String,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Handlers
-// ─────────────────────────────────────────────────────────────────────────────
-
+// API hanlders
 async fn register_user_handler(
     State(runtime): State<Arc<Runtime>>,
 ) -> Result<Json<UserResponse>, (StatusCode, String)> {
@@ -82,7 +75,7 @@ async fn register_module_handler(
         .await
         .map(|module_id| Json(ModuleResponse { module_id }))
         .map_err(|e| {
-            error!(error = %e, "register_module failed");
+            error!("register_module failed: {e}");
             (StatusCode::BAD_REQUEST, e.to_string())
         })
 }
@@ -116,15 +109,12 @@ async fn exec_function_handler(
         .await
         .map(|result| Json(ExecResponse { result }))
         .map_err(|e| {
-            error!(error = %e, user_id, function_id, "exec_function failed");
+            error!("exec_function failed: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  CLI
-// ─────────────────────────────────────────────────────────────────────────────
-
+// CLI
 #[derive(Parser, Debug)]
 #[command(
     version,
@@ -148,18 +138,10 @@ struct Args {
     max_functions: usize,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Entry point
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize structured async logging.
-    // Controlled by the RUST_LOG env var (e.g. RUST_LOG=info).
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::from_default_env())
-        .init();
+    // Init logger
+    env_logger::init();
 
     let args = Args::parse();
 
@@ -187,17 +169,28 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = format!("{}:{}", args.ip, args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    info!(address = %listener.local_addr()?, "Limes server started");
 
+    // Logo
+    println!(
+        r#"
+  _      _                     
+ | |    (_)                    
+ | |     _ _ __ ___   ___  ___ 
+ | |    | | '_ ` _ \ / _ \/ __|
+ | |____| | | | | | |  __/\__ \
+ |______|_|_| |_| |_|\___||___/
+                               
+
+    "#
+    );
+
+    info!("Limes server started on ip: {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
+// Helper
 fn internal_error(e: anyhow::Error) -> (StatusCode, String) {
-    error!(error = %e, "Internal server error");
+    error!("Internal server error: {e}");
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }

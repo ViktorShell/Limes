@@ -194,7 +194,7 @@ def main() -> None:
 
         # ── Step 6: Agent query that exercises the calculator tool ────────────
         separator("Agent integration test")
-        query = f"Solve the following expression `5 * 5 - 2 + 7 - 16 / 4 + 2`"
+        query = f"Use the calculator tool with function_id `{calculator_fn_id}` to solve the following expression `5 * 5 - 2 + 7 - 16 / 4 + 2`"
         print(f"  Query: {query}")
         answer = client.exec_function(user_id, agent_fn_id, query)
         print(f"  Agent answer:\n{textwrap.indent(answer, '    ')}")

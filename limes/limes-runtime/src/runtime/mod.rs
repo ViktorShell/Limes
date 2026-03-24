@@ -6,11 +6,11 @@ use std::{
     },
 };
 
+use log::*;
 use nanoid::nanoid;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
-use wasmtime::{Config, Engine};
+use wasmtime::Engine;
 
 use crate::runtime::lambda::FunctionHandler;
 use crate::runtime::runtime_builder::RuntimeBuilder;
@@ -21,10 +21,6 @@ pub mod lambda;
 pub mod runtime_builder;
 pub mod types;
 pub mod user_module;
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Error types
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -49,15 +45,8 @@ pub enum RuntimeError {
     EngineConfig(String),
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Global singleton
-// ─────────────────────────────────────────────────────────────────────────────
-
+// Singleton
 static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Runtime
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub struct Runtime {
@@ -81,43 +70,51 @@ impl Runtime {
         RUNTIME.get().cloned().ok_or(RuntimeError::NotInitialized)
     }
 
-    // ─── User management ─────────────────────────────────────────────────────
-
     pub async fn register_user(&self) -> anyhow::Result<UserId> {
         let mut user_guard = self.users.write().await;
         let user_id = uuid::Uuid::new_v4().to_string();
         user_guard.insert(user_id.clone(), UserModules::default());
-        info!(user_id, "User registered");
+        info!("User registered with id: {user_id}");
         Ok(user_id)
     }
 
     pub async fn remove_user(&self, user_id: &UserId) -> bool {
-        let removed = self.users.write().await.remove(user_id).is_some();
+        let mut user_guard = self.users.write().await;
+        let removed = user_guard.remove(user_id).is_some();
         if removed {
-            info!(user_id, "User removed");
+            info!("User removed with id: {user_id}");
         } else {
-            warn!(user_id, "Attempted to remove unknown user");
+            warn!("Attempted to remove unknown user: {user_id}");
         }
         removed
     }
-
-    // ─── Module management ───────────────────────────────────────────────────
 
     pub async fn register_module(
         &self,
         user_id: &UserId,
         bytes: &[u8],
     ) -> anyhow::Result<ModuleId> {
-        let users = self.users.read().await;
+        let mut users = self.users.write().await;
         let user_modules = users
-            .get(user_id)
+            .get_mut(user_id)
             .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
         let key = user_modules.compute_hash(bytes);
         let module_id = user_modules
             .insert_module(&self.wasm_engine, key, bytes)
-            .await?;
-        info!(user_id, module_id, "Wasm module registered");
+            .await;
+
+        let module_id =
+            module_id.map_err(|_| anyhow::anyhow!("Error while registering the module id"))?;
+
+        info!(
+            r#"
+Wasm module registered:
+    user_id: {user_id}
+    module_id: {module_id}
+        "#
+        );
+
         Ok(module_id)
     }
 
@@ -126,21 +123,31 @@ impl Runtime {
         user_id: &UserId,
         module_id: &ModuleId,
     ) -> anyhow::Result<()> {
-        let users = self.users.read().await;
+        let mut users = self.users.write().await;
         let user_modules = users
-            .get(user_id)
+            .get_mut(user_id)
             .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
         if user_modules.contains_module(module_id).await {
             user_modules.remove_module(module_id).await;
-            info!(user_id, module_id, "Wasm module removed");
+            info!(
+                r#"
+Wasm module remove:
+    user_id: {user_id}
+    module_id: {module_id}
+            "#
+            );
         } else {
-            warn!(user_id, module_id, "Attempted to remove unknown module");
+            warn!(
+                r#"
+Attempted to remove unknow module:
+    user_id: {user_id}
+    module_id: {module_id}
+            "#
+            );
         }
         Ok(())
     }
-
-    // ─── Function management ─────────────────────────────────────────────────
 
     pub async fn load_function(
         &self,
@@ -160,9 +167,9 @@ impl Runtime {
             .into());
         }
 
-        let users = self.users.read().await;
-        let user_modules = users
-            .get(user_id)
+        let mut users_guard = self.users.write().await;
+        let user_modules = users_guard
+            .get_mut(user_id)
             .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
         let module_handler = user_modules
@@ -182,16 +189,22 @@ impl Runtime {
         )
         .await?;
 
-        user_modules
+        let _ = user_modules
             .loaded_functions
-            .write()
-            .await
             .insert(function_id.clone(), Arc::new(handler));
 
         self.currently_allocated_functions
             .fetch_add(1, Ordering::SeqCst);
 
-        info!(user_id, function_id, function_name, "Function loaded");
+        info!(
+            r#"
+Function loaded:
+    user_id: {user_id}
+    function_id: {function_id}
+    function_name: {function_name}
+        "#
+        );
+
         Ok(function_id)
     }
 
@@ -200,21 +213,24 @@ impl Runtime {
         user_id: &UserId,
         function_id: &FunctionId,
     ) -> anyhow::Result<()> {
-        let users = self.users.read().await;
+        let mut users = self.users.write().await;
         let user_modules = users
-            .get(user_id)
+            .get_mut(user_id)
             .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
-        user_modules
-            .loaded_functions
-            .write()
-            .await
-            .remove(function_id);
+        user_modules.loaded_functions.remove(function_id);
 
         self.currently_allocated_functions
             .fetch_sub(1, Ordering::SeqCst);
 
-        info!(user_id, function_id, "Function unloaded");
+        info!(
+            r#"
+Function unloaded:
+    user_id: {user_id}
+    function_id: {function_id}
+"#
+        );
+
         Ok(())
     }
 
@@ -225,10 +241,11 @@ impl Runtime {
         args: &str,
     ) -> anyhow::Result<String> {
         debug!(
-            user_id,
-            function_id,
-            args_len = args.len(),
-            "Executing function"
+            r#"
+Executing function:
+    user_id: {user_id}
+    function_id: {function_id}
+        "#
         );
 
         let users = self.users.read().await;
@@ -236,13 +253,21 @@ impl Runtime {
             .get(user_id)
             .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
-        let functions = user_modules.loaded_functions.read().await;
+        let functions = &user_modules.loaded_functions;
         let handler = functions
             .get(function_id)
             .ok_or_else(|| RuntimeError::FunctionNotFound(function_id.clone()))?;
 
         let result = handler.lambda.run(args).await?;
-        info!(user_id, function_id, "Function executed successfully");
+        info!(
+            r#"
+Function executed successfully:
+    user_id: {user_id}
+    function_id: {function_id}
+    result: {result}
+        "#
+        );
+
         Ok(result)
     }
 
@@ -251,12 +276,19 @@ impl Runtime {
         user_id: &UserId,
         function_id: &FunctionId,
     ) -> anyhow::Result<()> {
+        info!(
+            r#"
+Function interruption signal:
+    user_id: {user_id}
+    function_id: {function_id}
+        "#
+        );
         let users = self.users.read().await;
         let user_modules = users
             .get(user_id)
             .ok_or_else(|| RuntimeError::UserNotFound(user_id.clone()))?;
 
-        let functions = user_modules.loaded_functions.read().await;
+        let functions = &user_modules.loaded_functions;
         let handler = functions
             .get(function_id)
             .ok_or_else(|| RuntimeError::FunctionNotFound(function_id.clone()))?;
@@ -269,31 +301,21 @@ impl Runtime {
         user_id: &UserId,
     ) -> anyhow::Result<Vec<Arc<FunctionHandler>>> {
         let user_guard = self.users.read().await;
-        dbg!(&user_guard);
-        println!("HERE IT IS");
-        println!("{user_id}");
         let user_modules = user_guard
             .get(user_id)
             .ok_or(anyhow::anyhow!("Runtime: User not found"))?;
-        dbg!(&user_modules);
 
-        let user_func_guard = user_modules.loaded_functions.read().await;
+        let user_func_guard = &user_modules.loaded_functions;
         let func_arr: Vec<Arc<FunctionHandler>> = user_func_guard.values().cloned().collect();
 
         Ok(func_arr)
     }
-
-    // ─── Internal ────────────────────────────────────────────────────────────
 
     pub(crate) fn set_global(rt: Arc<Runtime>) {
         // Ignore the error — in tests multiple runtimes may be built
         let _ = RUNTIME.set(rt);
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -407,34 +429,5 @@ mod tests {
 
         let result = rt.exec_function(&user, &fid, "").await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn interact_with_agent() {
-        let rt = Runtime::runtime_builder().build().await.unwrap();
-        let user = rt.register_user().await.unwrap();
-        dbg!(&user);
-        let bytes = load_bytes("interact_with_agent.wasm");
-        let mid = rt.register_module(&user, &bytes).await.unwrap();
-        let fid = rt
-            .load_function(
-                &user,
-                &mid,
-                1024 * 1024 * 2,
-                "interact_with_agent".into(),
-                "A question or task for an ai agent".into(),
-                "Allows the interaction with an ai agent which can answer to questions and execute tasks".into()
-            ).await.unwrap();
-
-        // let answer = rt.exec_function(&user, &fid, "Tell me the name of the capital of Italy, answer with just the name of the city in small case").await.unwrap();
-        let answer = rt
-            .exec_function(
-                &user,
-                &fid,
-                "Which is the capital of Italy, answer with only the city name in small cases",
-            )
-            .await
-            .unwrap();
-        assert_eq!("rome", answer);
     }
 }

@@ -3,19 +3,14 @@ use std::sync::{
     Arc,
 };
 
-use thiserror::Error;
-use tracing::{debug, error, info, warn};
-
 use crate::agents::LimesAgent;
+use log::*;
+use thiserror::Error;
 use wasmtime::{
     component::{bindgen, Component, HasSelf, Linker, ResourceTable},
     Store, StoreLimits, StoreLimitsBuilder,
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Error types
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Error, Debug, PartialEq, PartialOrd)]
 pub enum LambdaError {
@@ -26,10 +21,6 @@ pub enum LambdaError {
     #[error("Cannot stop a function that is not currently running")]
     FunctionNotRunning,
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  FunctionHandler — public entity managing a single loaded lambda
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub enum FunctionStatus {
@@ -73,10 +64,7 @@ impl FunctionHandler {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  LambdaState — per-invocation Wasm store data
-// ─────────────────────────────────────────────────────────────────────────────
-
+// WIT generator
 bindgen!({
     inline: r#"
         package limes:limes;
@@ -93,12 +81,9 @@ pub struct LambdaState {
     wasi_ctx: WasiCtx,
     resource_table: ResourceTable,
     limiter: StoreLimits,
-    /// Identifies which user owns this execution (used by agent calls).
     user_id: String,
 }
 
-/// `WasiView` gives `wasmtime_wasi` access to the WASI context and resource
-/// table stored inside our custom store data.
 impl WasiView for LambdaState {
     fn ctx(&mut self) -> WasiCtxView<'_> {
         WasiCtxView {
@@ -108,13 +93,16 @@ impl WasiView for LambdaState {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Host implementation of the `limes-api` WIT interface
-// ─────────────────────────────────────────────────────────────────────────────
-
+// WIT implementation, it actually generates the Traits usable by the Guest machine
 impl ExecutorImports for LambdaState {
     async fn invoke_agent(&mut self, input: String) -> String {
-        debug!(user_id = %self.user_id, "Guest invoked invoke_agent");
+        debug!(
+            r#"
+Guest invoked the agent:
+    user_id: {}
+        "#,
+            self.user_id
+        );
 
         let agent = match LimesAgent::new_agent(
             "http://127.0.0.1:11434",
@@ -125,7 +113,7 @@ impl ExecutorImports for LambdaState {
         {
             Ok(agent) => agent,
             Err(e) => {
-                error!(error = %e, "Failed to initialize LimesAgent");
+                error!("Failed to initialize LimesAgent: {e}");
                 return format!("AgentError: agent initialization failed - {e}");
             }
         };
@@ -136,21 +124,16 @@ impl ExecutorImports for LambdaState {
                 answer
             }
             Err(e) => {
-                error!("Agent invocation failed");
+                error!("Agent invocation failed: {e}");
                 format!("AgentError: agent invocation failed - {e}")
             }
         }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Lambda — the core execution unit
-// ─────────────────────────────────────────────────────────────────────────────
-
 pub struct Lambda {
     component: Arc<Component>,
     memory_size: usize,
-    /// Shared flag allowing async stop from another task.
     stop: Arc<AtomicBool>,
     user_id: String,
 }
@@ -170,7 +153,7 @@ impl Lambda {
                 Self::MIN_MEMORY_BYTES
             ));
         }
-        info!(memory_size, "Lambda created");
+        info!("Lambda created");
         Ok(Self {
             component,
             memory_size,
@@ -180,7 +163,7 @@ impl Lambda {
     }
 
     pub async fn run(&self, args: &str) -> anyhow::Result<String> {
-        debug!(args_len = args.len(), "Lambda::run invoked");
+        debug!("Lambda::run invoked");
 
         let engine = self.component.engine();
         let mut linker = Linker::<LambdaState>::new(engine);
@@ -224,8 +207,6 @@ impl Lambda {
         Ok(())
     }
 
-    // === Private helpers ====================================================
-
     fn build_store(&self) -> Store<LambdaState> {
         let limiter = StoreLimitsBuilder::new()
             .memory_size(self.memory_size)
@@ -266,10 +247,6 @@ impl std::fmt::Debug for Lambda {
             .finish()
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -357,13 +334,4 @@ mod tests {
         assert_eq!("[a,b,c,d,e,f]", r1.unwrap().unwrap());
         assert_eq!("[a,b,c,d,e]", r2.unwrap().unwrap());
     }
-
-    // #[tokio::test]
-    // async fn intercat_with_the_agent() {
-    //     let engine = make_engine();
-    //     let lambda = Arc::new(make_lambda(&engine, "interact_with_agent.wasm", MEM_2MIB).await);
-    //     let result = lambda.run("").await.unwrap();
-    //     dbg!(&result);
-    //     assert!(!result.is_empty())
-    // }
 }

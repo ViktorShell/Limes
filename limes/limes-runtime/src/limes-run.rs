@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use limes::runtime::Runtime;
+use log::info;
 use std::path::{Path, PathBuf};
-use tracing::info;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  CLI
@@ -38,10 +37,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::from_default_env())
-        .init();
+    env_logger::init();
 
     let args = Args::parse();
     let wasm_bytes = load_bytes(&args.file_path)?;
@@ -80,7 +76,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to execute the function")?;
 
-    info!(result, "Function completed");
+    info!("Function completed: {result}");
     println!("{result}");
 
     // Cleanup

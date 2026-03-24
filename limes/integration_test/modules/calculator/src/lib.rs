@@ -4,12 +4,28 @@ use std::iter::Peekable;
 use std::str::SplitWhitespace;
 
 #[limes_run]
-async fn run(args: String) -> String {
-    let mut tokens = args.split_whitespace().peekable();
+fn run(args: String) -> String {
+    let expression = match extract(&args) {
+        Some(exp) => exp,
+        _ => return "ERROR: not a valid expression".to_string(),
+    };
+    let mut tokens = expression.split_whitespace().peekable();
     match parse_expr(&mut tokens, 0) {
         Ok(expr) => expr.solve().to_string(),
         Err(e) => e.to_string(),
     }
+}
+
+fn extract(input: &str) -> Option<&str> {
+    // Cerca la posizione di "expression": "
+    let pattern = r#""expression": ""#;
+    let start = input.find(pattern)? + pattern.len();
+
+    // Prende tutto ciò che segue fino alle virgolette di chiusura
+    let rest = &input[start..];
+    let end = rest.find('"')?;
+
+    Some(&rest[..end])
 }
 
 #[derive(Debug)]

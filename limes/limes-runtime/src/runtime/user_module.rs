@@ -2,7 +2,6 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Result;
 use crc32fast::Hasher;
-use tokio::sync::RwLock;
 use wasmtime::{component::Component, Engine};
 
 use super::lambda::FunctionHandler;
@@ -29,15 +28,15 @@ impl std::fmt::Debug for ModuleHandler {
 
 #[derive(Debug, Default)]
 pub struct UserModules {
-    pub wasm_modules: Arc<RwLock<HashMap<ModuleId, ModuleHandler>>>,
-    pub loaded_functions: Arc<RwLock<HashMap<FunctionId, Arc<FunctionHandler>>>>,
+    pub wasm_modules: HashMap<ModuleId, ModuleHandler>,
+    pub loaded_functions: HashMap<FunctionId, Arc<FunctionHandler>>,
 }
 
 impl UserModules {
     /// Compile `bytes` into a Wasm component and store it under `key`.
     /// Returns the key on success.
     pub async fn insert_module(
-        &self,
+        &mut self,
         engine: &Engine,
         key: ModuleId,
         bytes: &[u8],
@@ -45,7 +44,7 @@ impl UserModules {
         let component = Component::from_binary(engine, bytes)
             .map_err(|e| anyhow::anyhow!("UserModules: failed to compile component: {e}"))?;
 
-        self.wasm_modules.write().await.insert(
+        self.wasm_modules.insert(
             key,
             ModuleHandler {
                 component: Arc::new(component),
@@ -63,14 +62,14 @@ impl UserModules {
     }
 
     pub async fn get_module(&self, module_id: &ModuleId) -> Option<ModuleHandler> {
-        self.wasm_modules.read().await.get(module_id).cloned()
+        self.wasm_modules.get(module_id).cloned()
     }
 
     pub async fn contains_module(&self, module_id: &ModuleId) -> bool {
-        self.wasm_modules.read().await.contains_key(module_id)
+        self.wasm_modules.contains_key(module_id)
     }
 
-    pub async fn remove_module(&self, module_id: &ModuleId) {
-        self.wasm_modules.write().await.remove(module_id);
+    pub async fn remove_module(&mut self, module_id: &ModuleId) {
+        self.wasm_modules.remove(module_id);
     }
 }
