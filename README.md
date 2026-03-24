@@ -39,7 +39,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-atoi = "2.0.0"
 limes-macro = { path = "{PATH_TO}/limes-macro" }
 wit-bindgen = "0.53.1"
 
