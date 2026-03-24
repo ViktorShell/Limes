@@ -52,9 +52,9 @@ impl LimesAgent<ollama::CompletionModel> {
         info!(
             r#"
 LimesAgent initialized:
-    host: {host}
-    model: {model}
-    user_id: {user_id}
+>> host: {host}
+>> model: {model}
+>> user_id: {user_id}
         "#
         );
         Ok(Self { agent })
@@ -72,11 +72,7 @@ Agent prompt received:
             .agent
             .prompt(prompt)
             .await
-            .context("LimesAgent: prompt call failed");
-
-        // FIX: MUST REMOVE
-        let answer = answer.unwrap();
-        println!("\n\n\n{}\n\n\n", answer.clone());
+            .context("LimesAgent: prompt call failed")?;
 
         Ok(answer)
     }

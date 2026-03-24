@@ -27,7 +27,6 @@ impl RuntimeBuilder {
         self
     }
 
-    // FIX: must implement the correct memory counter
     pub fn set_memory_size(&mut self, memory_size: usize) -> &mut Self {
         self.memory_size = memory_size;
         self
@@ -63,8 +62,8 @@ impl RuntimeBuilder {
         info!(
             r#"
 Limes Runtime initialized:
-    memory_size: {}
-    max_functions: {}
+>> memory_size: {}
+>> max_functions: {}
         "#,
             self.memory_size, self.max_functions
         );

@@ -165,9 +165,6 @@ impl Lambda {
     pub async fn run(&self, args: &str) -> anyhow::Result<String> {
         debug!("Lambda::run invoked");
 
-        // FIX: REMOVE
-        info!("LAMBDA RUN: {}", args);
-
         let engine = self.component.engine();
         let mut linker = Linker::<LambdaState>::new(engine);
 
@@ -206,7 +203,7 @@ impl Lambda {
         }
         self.stop.store(true, Ordering::SeqCst);
         self.component.engine().increment_epoch();
-        info!("Lambda stop signal sent");
+        info!("Lambda stop signal received");
         Ok(())
     }
 

@@ -12,7 +12,7 @@ use bytes::Bytes;
 use clap::Parser;
 use limes::runtime::Runtime;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{env, sync::Arc};
 
 // DTO's
 #[derive(Deserialize)]
@@ -136,14 +136,21 @@ struct Args {
     /// Maximum number of concurrently loaded functions
     #[arg(long, default_value_t = 100)]
     max_functions: usize,
+
+    /// Verbose, show information about the execution status
+    #[arg(short, long, default_value_t = false)]
+    verbose: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Init logger
-    env_logger::init();
-
     let args = Args::parse();
+
+    // Init logger
+    if args.verbose {
+        env::set_var("RUST_LOG", "info");
+    }
+    env_logger::init();
 
     Runtime::runtime_builder()
         .memory_size(args.memory)
@@ -181,10 +188,11 @@ async fn main() -> anyhow::Result<()> {
  |______|_|_| |_| |_|\___||___/
                                
 
-    "#
+Limes server started on ip: {}
+    "#,
+        listener.local_addr()?
     );
 
-    info!("Limes server started on ip: {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
     Ok(())
 }

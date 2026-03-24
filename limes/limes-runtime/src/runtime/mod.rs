@@ -110,8 +110,8 @@ impl Runtime {
         info!(
             r#"
 Wasm module registered:
-    user_id: {user_id}
-    module_id: {module_id}
+>> user_id: {user_id}
+>> module_id: {module_id}
         "#
         );
 
@@ -133,16 +133,16 @@ Wasm module registered:
             info!(
                 r#"
 Wasm module remove:
-    user_id: {user_id}
-    module_id: {module_id}
+>> user_id: {user_id}
+>> module_id: {module_id}
             "#
             );
         } else {
             warn!(
                 r#"
 Attempted to remove unknow module:
-    user_id: {user_id}
-    module_id: {module_id}
+>> user_id: {user_id}
+>> module_id: {module_id}
             "#
             );
         }
@@ -199,9 +199,9 @@ Attempted to remove unknow module:
         info!(
             r#"
 Function loaded:
-    user_id: {user_id}
-    function_id: {function_id}
-    function_name: {function_name}
+>> user_id: {user_id}
+>> function_id: {function_id}
+>> function_name: {function_name}
         "#
         );
 
@@ -226,8 +226,8 @@ Function loaded:
         info!(
             r#"
 Function unloaded:
-    user_id: {user_id}
-    function_id: {function_id}
+>> user_id: {user_id}
+>> function_id: {function_id}
 "#
         );
 
@@ -248,9 +248,6 @@ Executing function:
         "#
         );
 
-        // FIX: REMOVE
-        println!("ARGS: {args}");
-
         let users = self.users.read().await;
         let user_modules = users
             .get(user_id)
@@ -265,9 +262,9 @@ Executing function:
         info!(
             r#"
 Function executed successfully:
-    user_id: {user_id}
-    function_id: {function_id}
-    result: {result}
+>> user_id: {user_id}
+>> function_id: {function_id}
+>> result: {result}
         "#
         );
 
@@ -282,8 +279,8 @@ Function executed successfully:
         info!(
             r#"
 Function interruption signal:
-    user_id: {user_id}
-    function_id: {function_id}
+>> user_id: {user_id}
+>> function_id: {function_id}
         "#
         );
         let users = self.users.read().await;

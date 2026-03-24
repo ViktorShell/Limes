@@ -76,8 +76,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to execute the function")?;
 
-    info!("Function completed: {result}");
-    println!("{result}");
+    info!("Function execution completed with result: {result}");
 
     // Cleanup
     rt.unload_function(&user_id, &function_id)
