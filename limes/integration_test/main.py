@@ -175,10 +175,7 @@ def main() -> None:
             function_memory_size=1024 * 1024 * 2,
             function_name="agent",
             function_input_description='{"ask_agent": "string"}',
-            description=(
-                "An LLM agent able to answer to simple questions"
-                "to answer questions or execute tasks."
-            ),
+            description=("An LLM agent able to answer to simple questions"),
         )
         print(f"  agent function_id     = {agent_fn_id}")
 
@@ -192,7 +189,7 @@ def main() -> None:
 
         # ── Step 6: Agent query that exercises the calculator tool ────────────
         separator("Agent integration test")
-        query = "Use the calculator tool to solve the following expression '5 * 5 - 2 + 7 - 16 / 4 + 2'"
+        query = "Can you solve the following expression using the user defined tools -> '5 * 5 - 2 + 7 - 16 / 4 + 2'"
         print(f"  Query: {query}")
         answer = client.exec_function(user_id, agent_fn_id, query)
         print(f"  Agent answer:\n{textwrap.indent(answer, '    ')}")
