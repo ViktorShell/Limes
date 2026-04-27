@@ -109,10 +109,9 @@ impl Runtime {
 
         info!(
             r#"
-Wasm module registered:
->> user_id: {user_id}
->> module_id: {module_id}
-        "#
+                Wasm module registered:
+                >> user_id: {user_id}
+                >> module_id: {module_id}"#
         );
 
         Ok(module_id)
@@ -132,18 +131,16 @@ Wasm module registered:
             user_modules.remove_module(module_id).await;
             info!(
                 r#"
-Wasm module remove:
->> user_id: {user_id}
->> module_id: {module_id}
-            "#
+                Wasm module remove:
+                >> user_id: {user_id}
+                >> module_id: {module_id}"#
             );
         } else {
             warn!(
                 r#"
-Attempted to remove unknow module:
->> user_id: {user_id}
->> module_id: {module_id}
-            "#
+                Attempted to remove unknow module:
+                >> user_id: {user_id}
+                >> module_id: {module_id}"#
             );
         }
         Ok(())
@@ -155,8 +152,8 @@ Attempted to remove unknow module:
         module_id: &ModuleId,
         function_memory_size: usize,
         function_name: String,
-        function_input_description: String,
         description: String,
+        function_input_description_json: String,
     ) -> anyhow::Result<FunctionId> {
         let available = self.memory_size;
         if function_memory_size > available {

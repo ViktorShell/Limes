@@ -142,7 +142,7 @@ def main() -> None:
     # ── Step 1: Load Wasm binaries ───────────────────────────────────────────
     separator("Loading Wasm files")
     agent_bytes = load_wasm("agent_executor.wasm")
-    calculator_bytes = load_wasm("calculator.wasm")
+    calculator_bytes = load_wasm("op_a_b.wasm")
 
     # ── Step 2: Register user ────────────────────────────────────────────────
     separator("User")
@@ -165,7 +165,7 @@ def main() -> None:
             function_memory_size=1024 * 1024 * 2,
             function_name="calculator",
             function_input_description=('{"expression": "string"}'),
-            description="Evaluates a simple arithmetic expression and returns the result as a string. An example of expression is rappresented as `5 + 2 - 3 * 4 / 1`",
+            description="Calculate the result of an expression of the following format `a + b`, `a - b`, `a * c`",
         )
         print(f"  calculator function_id = {calculator_fn_id}")
 
@@ -181,15 +181,15 @@ def main() -> None:
 
         # ── Step 5: Smoke-test the calculator directly ───────────────────────
         separator("Calculator smoke test")
-        expr = '{"expression": "5 * 5 + 5 / 3 * 1"}'
+        expr = '{"expression": "5 + 5"}'
         calc_result = client.exec_function(user_id, calculator_fn_id, expr)
         print(f"  {expr} = {calc_result}")
-        assert calc_result == "26", f"Unexpected result: {calc_result!r}"
+        assert calc_result == "10", f"Unexpected result: {calc_result!r}"
         print("  ✓ Calculator assertion passed")
 
         # ── Step 6: Agent query that exercises the calculator tool ────────────
         separator("Agent integration test")
-        query = "Can you solve the following expression using the user defined tools -> '5 * 5 - 2 + 7 - 16 / 4 + 2'"
+        query = "Can you solve the following expression using the user defined tools -> '5 * 5 - 2 + 7 - 16 + 2'"
         print(f"  Query: {query}")
         answer = client.exec_function(user_id, agent_fn_id, query)
         print(f"  Agent answer:\n{textwrap.indent(answer, '    ')}")

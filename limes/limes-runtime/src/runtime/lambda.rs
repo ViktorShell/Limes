@@ -98,9 +98,8 @@ impl ExecutorImports for LambdaState {
     async fn invoke_agent(&mut self, input: String) -> String {
         debug!(
             r#"
-Guest invoked the agent:
-    user_id: {}
-        "#,
+            Guest invoked the agent:
+                user_id: {}"#,
             self.user_id
         );
 
