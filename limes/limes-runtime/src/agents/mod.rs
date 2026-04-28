@@ -214,6 +214,7 @@ impl LimesAgent {
 
             // 2. Convert to string json
             let json_body = serde_json::to_string(&payload)?;
+            // log::info!("Agent JSON BODY: {}", json_body.clone());
 
             // 3. Send the request
             let response: OllamaResponse = serde_json::from_str(

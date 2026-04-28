@@ -6,10 +6,6 @@ use nanoid::nanoid;
 use std::{collections::HashMap, sync::Arc};
 use wasmtime::{component::Component, Engine};
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  ModuleHandler — thin wrapper around a compiled Wasm component
-// ─────────────────────────────────────────────────────────────────────────────
-
 #[derive(Clone)]
 pub struct ModuleHandler {
     pub component: Arc<Component>,
@@ -23,10 +19,6 @@ impl std::fmt::Debug for ModuleHandler {
         f.write_str("ModuleHandler")
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  UserModules — all modules and loaded functions for a single user
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub struct UserModules {

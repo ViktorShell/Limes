@@ -119,8 +119,8 @@ impl Runtime {
         info!(
             r#"
                 Wasm module registered:
-                >> user_id: {user_id}
-                >> module_id: {module_id}"#
+                    user_id: {user_id}
+                    module_id: {module_id}"#
         );
 
         Ok(module_id)
@@ -141,15 +141,15 @@ impl Runtime {
             info!(
                 r#"
                 Wasm module remove:
-                >> user_id: {user_id}
-                >> module_id: {module_id}"#
+                    user_id: {user_id}
+                    module_id: {module_id}"#
             );
         } else {
             warn!(
                 r#"
                 Attempted to remove unknow module:
-                >> user_id: {user_id}
-                >> module_id: {module_id}"#
+                    user_id: {user_id}
+                    module_id: {module_id}"#
             );
         }
         Ok(())
