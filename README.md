@@ -1,5 +1,7 @@
 # Limes
 
+![Limes](./pics/PNG/Logo_Limes.png)
+
 A runtime for WebAssembly lambda function's with support for LLM's interaction.
 
 ## How to use the server
