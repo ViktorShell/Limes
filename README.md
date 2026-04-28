@@ -1,6 +1,9 @@
 # Limes
 
-![Limes](./pics/limes.svg)
+<p align="center">
+    <img width="600" src="https://github.com/ViktorShell/Limes/blob/limes_0_2_0/pics/limes.svg" alt="Limes Logo">
+</p>
+<!-- ![Limes](./pics/limes.svg) -->
 
 A runtime for WebAssembly lambda function's with support for LLM's interaction.
 
