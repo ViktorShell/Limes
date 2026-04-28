@@ -1,23 +1,20 @@
-use atoi::atoi;
 use limes_macro::limes_run;
 
 #[limes_run]
 fn run(input: String) -> String {
-    let mut iter = input.split_ascii_whitespace();
-    let ascii_a = iter.next().unwrap();
-    let ascii_op = iter.next().unwrap();
-    let ascii_b = iter.next().unwrap();
+    let input_json: serde_json::Value = serde_json::from_str(&input).unwrap();
+    let a = input_json["a"].as_u64().unwrap_or(0);
+    let b = input_json["b"].as_u64().unwrap_or(0);
+    let op = input_json["op"].as_str().unwrap_or("+");
 
-    let a = atoi::<i32>(ascii_a.as_bytes()).unwrap();
-    let b = atoi::<i32>(ascii_b.as_bytes()).unwrap();
-
-    let exec = match ascii_op {
+    let exec = match op {
         "+" => a + b,
         "-" => a - b,
         "*" => a * b,
         "/" => a / b,
         _ => 0,
-    };
+    }
+    .to_string();
 
-    exec.to_string()
+    format!(r#"{{"content": {} }}"#, exec)
 }

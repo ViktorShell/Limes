@@ -8,14 +8,16 @@ use std::str::SplitWhitespace;
 fn run(expression: String) -> String {
     let expression = extract_expression(&expression);
     if expression.contains("FAILED TO PARSE") {
-        return "ERROR: not a valid expression of wrong json format".to_string();
+        return "ERROR: not a valid expression or wrong json format".to_string();
     }
 
     let mut tokens = expression.split_whitespace().peekable();
-    match parse_expr(&mut tokens, 0) {
+    let result = match parse_expr(&mut tokens, 0) {
         Ok(expr) => expr.solve().to_string(),
         Err(e) => e.to_string(),
-    }
+    };
+
+    format!(r#"{{"content": {}}}"#, result)
 }
 
 fn remove_apx(value: &str) -> &str {
@@ -79,9 +81,7 @@ fn parse_expr(tokens: &mut Peekable<SplitWhitespace>, min_bp: u8) -> Result<Expr
     let mut lhs = match atoi::<i32>(token.as_bytes()) {
         Some(n) => Expr::Int(n),
         None => {
-            return Err(
-                "This is not a valid expression, e.g of a valid one is `5 + 2 - 3 * 4 / 1`",
-            );
+            return Err("This is not a valid expression, e.g of a valid one is 5 + 2 - 3 * 4 / 1");
         }
     };
 
@@ -103,7 +103,6 @@ fn parse_expr(tokens: &mut Peekable<SplitWhitespace>, min_bp: u8) -> Result<Expr
         tokens.next();
 
         let rhs = parse_expr(tokens, r_bp)?;
-
         lhs = Expr::Binary(Box::new(lhs), op, Box::new(rhs));
     }
 

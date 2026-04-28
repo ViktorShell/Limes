@@ -61,9 +61,9 @@ impl RuntimeBuilder {
 
         info!(
             r#"
-Limes Runtime initialized:
->> memory_size: {}
->> max_functions: {}
+            Limes Runtime initialized:
+                memory_size: {}
+                max_functions: {}
         "#,
             self.memory_size, self.max_functions
         );

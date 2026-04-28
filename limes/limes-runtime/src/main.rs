@@ -1,6 +1,8 @@
 use anyhow::Result;
 use log::*;
 
+use base64::{engine::general_purpose, Engine as _};
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -8,19 +10,24 @@ use axum::{
     routing::{delete, post},
     Json, Router,
 };
-use bytes::Bytes;
 use clap::Parser;
-use limes::runtime::Runtime;
+use limes::{config::Config, runtime::Runtime};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use std::{env, sync::Arc};
 
 // DTO's
 #[derive(Deserialize)]
-pub struct LoadFunctionPayload {
-    pub function_memory_size: usize,
+pub struct RegisterModulePayload {
+    pub wasm_base64: String,
     pub function_name: String,
-    pub function_input_description: String,
-    pub description: String,
+    pub function_description: String,
+    pub function_input_json: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct FunctionExecBody {
+    pub arguments: String,
 }
 
 #[derive(Serialize)]
@@ -68,32 +75,37 @@ async fn remove_user_handler(
 async fn register_module_handler(
     State(runtime): State<Arc<Runtime>>,
     Path(user_id): Path<String>,
-    body: Bytes,
+    Json(payload): Json<RegisterModulePayload>,
 ) -> Result<Json<ModuleResponse>, (StatusCode, String)> {
+    let wasm_bytes = general_purpose::STANDARD
+        .decode(&payload.wasm_base64)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid base64: {e}")))?;
+
     runtime
-        .register_module(&user_id, &body)
+        .register_module(
+            &user_id,
+            &wasm_bytes,
+            payload.function_name,
+            payload.function_description,
+            payload.function_input_json,
+        )
         .await
         .map(|module_id| Json(ModuleResponse { module_id }))
         .map_err(|e| {
-            error!("register_module failed: {e}");
-            (StatusCode::BAD_REQUEST, e.to_string())
+            warn!("register_module failed: {e}");
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Failed to register the module: {e}"),
+            )
         })
 }
 
 async fn load_function_handler(
     State(runtime): State<Arc<Runtime>>,
     Path((user_id, module_id)): Path<(String, u32)>,
-    Json(payload): Json<LoadFunctionPayload>,
 ) -> Result<Json<FunctionResponse>, (StatusCode, String)> {
     runtime
-        .load_function(
-            &user_id,
-            &module_id,
-            payload.function_memory_size,
-            payload.function_name,
-            payload.function_input_description,
-            payload.description,
-        )
+        .load_function(&user_id, &module_id)
         .await
         .map(|function_id| Json(FunctionResponse { function_id }))
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
@@ -102,10 +114,10 @@ async fn load_function_handler(
 async fn exec_function_handler(
     State(runtime): State<Arc<Runtime>>,
     Path((user_id, function_id)): Path<(String, String)>,
-    body: String,
+    Json(payload): Json<FunctionExecBody>,
 ) -> Result<Json<ExecResponse>, (StatusCode, String)> {
     runtime
-        .exec_function(&user_id, &function_id, &body)
+        .exec_function(&user_id, &function_id, &payload.arguments)
         .await
         .map(|result| Json(ExecResponse { result }))
         .map_err(|e| {
@@ -120,7 +132,7 @@ async fn exec_function_handler(
     version,
     about = "Limes — FaaS runtime for Wasm modules with LLM support"
 )]
-struct Args {
+pub struct Args {
     /// Server bind address (e.g. 127.0.0.1)
     #[arg(short, long, default_value = "127.0.0.1")]
     ip: String,
@@ -137,6 +149,18 @@ struct Args {
     #[arg(long, default_value_t = 100)]
     max_functions: usize,
 
+    /// Ollama url
+    #[arg(long, default_value = "http://127.0.0.1:11434")]
+    ollama_url: String,
+
+    /// LLM model with thinking ability
+    #[arg(long, default_value = "qwen3:8b-q4_K_M ")]
+    llm_model: String,
+
+    /// Timemout of a request to an LLM in seconds
+    #[arg(long, default_value_t = 250)]
+    request_timeout: u64,
+
     /// Verbose, show information about the execution status
     #[arg(short, long, default_value_t = false)]
     verbose: bool,
@@ -151,6 +175,13 @@ async fn main() -> anyhow::Result<()> {
         env::set_var("RUST_LOG", "info");
     }
     env_logger::init();
+
+    // Init Global Config
+    Config::init(Config {
+        ollama_url: args.ollama_url,
+        model: args.llm_model,
+        request_timeout: Duration::from_secs(args.request_timeout),
+    });
 
     Runtime::runtime_builder()
         .memory_size(args.memory)

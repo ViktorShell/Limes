@@ -20,6 +20,7 @@ import sys
 import textwrap
 from pathlib import Path
 from typing import Any
+import base64
 
 import requests
 
@@ -58,15 +59,28 @@ class RuntimeAPIClient:
 
     # ── Modules ──────────────────────────────────────────────────────────────
 
-    def register_module(self, user_id: str, wasm_bytes: bytes) -> int:
+    def register_module(
+        self,
+        user_id: str,
+        wasm_b64: str,
+        function_name,
+        function_description,
+        function_input_json,
+    ) -> int:
         """Upload a Wasm binary; returns the module_id (u32)."""
+        payload: dict[str, Any] = {
+            "wasm_base64": wasm_b64,
+            "function_name": function_name,
+            "function_description": function_description,
+            "function_input_json": function_input_json,
+        }
+
         res = self.session.post(
             f"{self.base_url}/users/{user_id}/modules",
-            data=wasm_bytes,
             headers={
-                "Content-Type": "application/octet-stream",
-                "Content-Length": str(len(wasm_bytes)),
+                "Content-Type": "application/json",
             },
+            json=payload,
         )
         res.raise_for_status()
         return res.json()["module_id"]
@@ -77,50 +91,38 @@ class RuntimeAPIClient:
         self,
         user_id: str,
         module_id: int,
-        *,
-        function_memory_size: int,
-        function_name: str,
-        function_input_description: str,
-        description: str,
     ) -> str:
         """Instantiate a function from a module; returns the function_id."""
-        payload: dict[str, Any] = {
-            "function_memory_size": function_memory_size,
-            "function_name": function_name,
-            "function_input_description": function_input_description,
-            "description": description,
-        }
         res = self.session.post(
             f"{self.base_url}/users/{user_id}/modules/{module_id}/functions",
-            json=payload,
         )
         res.raise_for_status()
         return res.json()["function_id"]
 
     def exec_function(self, user_id: str, function_id: str, args: str) -> str:
         """Execute a loaded function and return the string result."""
+        args_json: dict[str, Any] = {"arguments": args}
         res = self.session.post(
             f"{self.base_url}/users/{user_id}/functions/{function_id}/exec",
-            data=args,
-            headers={"Content-Type": "text/plain"},
+            headers={"Content-Type": "application/json"},
+            json=args_json,
         )
         res.raise_for_status()
         return res.json()["result"]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# --- Helpers ---
 
 
-def load_wasm(name: str) -> bytes:
+def load_wasm_as_b64(name: str) -> str:
     path = WASM_DIR / name
     if not path.exists():
         print(f"[ERROR] Wasm file not found: {path}")
         sys.exit(1)
     data = path.read_bytes()
+    data_b64 = base64.b64encode(data).decode("utf-8")
     print(f"  Loaded {name} ({len(data):,} bytes)")
-    return data
+    return data_b64
 
 
 def separator(title: str = "") -> None:
@@ -131,71 +133,74 @@ def separator(title: str = "") -> None:
         print("─" * width)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Main test flow
-# ─────────────────────────────────────────────────────────────────────────────
+# --- Main test flow ---
 
 
 def main() -> None:
     client = RuntimeAPIClient(BASE_URL)
 
-    # ── Step 1: Load Wasm binaries ───────────────────────────────────────────
+    # ── Step 1: Load Wasm binaries ──
     separator("Loading Wasm files")
-    agent_bytes = load_wasm("agent_executor.wasm")
-    calculator_bytes = load_wasm("op_a_b.wasm")
+    agent_b64 = load_wasm_as_b64("agent_executor.wasm")
+    calculator_b64 = load_wasm_as_b64("calculator.wasm")
 
-    # ── Step 2: Register user ────────────────────────────────────────────────
+    # ── Step 2: Register user ───
     separator("User")
     user_id = client.create_user()
     print(f"  user_id = {user_id}")
 
     try:
-        # ── Step 3: Register modules ─────────────────────────────────────────
+        # ── Step 3: Register modules ───
         separator("Modules")
-        calculator_module_id = client.register_module(user_id, calculator_bytes)
+        calculator_module_id = client.register_module(
+            user_id,
+            calculator_b64,
+            "calculator",
+            "Solve calculation problems in the form like 5 + 3 - 12 / 2",
+            '{"required": ["expression"], "properties": { "expression": { "type": "string", "description": "An expression in form like 5 - 2 / 3 * 25"}}}',
+        )
         print(f"  calculator    module_id   = {calculator_module_id}")
-        agent_module_id = client.register_module(user_id, agent_bytes)
+
+        agent_module_id = client.register_module(
+            user_id,
+            agent_b64,
+            "llm_agent",
+            "Is an LLM Agent able to solve the asked tasks and answer to questions, it have access to the local tools",
+            '{"required": ["task"], "properties": {"task": {"type": "string", "description": "Any type of task or question"}}}',
+        )
         print(f"  agent_executor module_id   = {agent_module_id}")
 
-        # ── Step 4: Load functions ───────────────────────────────────────────
+        # ── Step 4: Load functions ───
         separator("Functions")
         calculator_fn_id = client.load_function(
             user_id,
             calculator_module_id,
-            function_memory_size=1024 * 1024 * 2,
-            function_name="calculator",
-            function_input_description=('{"expression": "string"}'),
-            description="Calculate the result of an expression of the following format `a + b`, `a - b`, `a * c`",
         )
         print(f"  calculator function_id = {calculator_fn_id}")
 
         agent_fn_id = client.load_function(
             user_id,
             agent_module_id,
-            function_memory_size=1024 * 1024 * 2,
-            function_name="agent",
-            function_input_description='{"ask_agent": "string"}',
-            description=("An LLM agent able to answer to simple questions"),
         )
         print(f"  agent function_id     = {agent_fn_id}")
 
-        # ── Step 5: Smoke-test the calculator directly ───────────────────────
+        # ── Step 5: Smoke-test the calculator directly ───
         separator("Calculator smoke test")
-        expr = '{"expression": "5 + 5"}'
+        expr = '{"expression": "5 * 5 - 2 + 7 - 16 + 2"}'
         calc_result = client.exec_function(user_id, calculator_fn_id, expr)
         print(f"  {expr} = {calc_result}")
-        assert calc_result == "10", f"Unexpected result: {calc_result!r}"
+        assert calc_result == '{"content": 16}', f"Unexpected result: {calc_result!r}"
         print("  ✓ Calculator assertion passed")
 
-        # ── Step 6: Agent query that exercises the calculator tool ────────────
+        # ── Step 6: Agent query that exercises the calculator tool ───
         separator("Agent integration test")
-        query = "Can you solve the following expression using the user defined tools -> '5 * 5 - 2 + 7 - 16 + 2'"
+        query = '{"task": "Can you solve the following expression using the calculator tool -> 5 * 5 - 2 + 7 - 16 + 2"}'
         print(f"  Query: {query}")
         answer = client.exec_function(user_id, agent_fn_id, query)
         print(f"  Agent answer:\n{textwrap.indent(answer, '    ')}")
 
     finally:
-        # ── Step 7: Cleanup ──────────────────────────────────────────────────
+        # ── Step 7: Cleanup ───
         separator("Cleanup")
         removed = client.remove_user(user_id)
         print(f"  User {user_id} removed: {removed}")

@@ -1,10 +1,11 @@
-use anyhow::{Context, Result};
-use log::*;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::time::Duration;
+
+use crate::config::Config;
 
 // --- Tool Definitions ---
 
@@ -43,7 +44,8 @@ pub struct Property {
     pub description: Option<String>,
 }
 
-pub trait LimesTool: Debug {
+#[async_trait]
+pub trait LimesTool: Debug + Send + Sync {
     fn name(&self) -> String;
     fn description(&self) -> String;
 
@@ -64,7 +66,7 @@ pub trait LimesTool: Debug {
         })
     }
 
-    fn execute(&self, arguments: &str) -> anyhow::Result<String>;
+    async fn execute(&self, arguments: &str) -> anyhow::Result<String>;
 }
 
 // --- Message & API Models ---
@@ -132,13 +134,41 @@ pub struct LimesAgent {
     pub url: String,
     pub model: String,
     pub messages: Vec<Message>,
-    pub tools: Vec<Box<dyn LimesTool>>,
+    pub tools: Vec<Box<dyn LimesTool + Send + Sync>>,
     pub tool_definitions: Vec<Tool>,
     client: reqwest::Client,
 }
 
 impl LimesAgent {
-    pub async fn new(url: String, model: String, preamble: String) -> anyhow::Result<Self> {
+    pub async fn new() -> anyhow::Result<Self> {
+        let conf = Config::get().read().unwrap();
+        let url = conf.get_ollama_url();
+        let model = conf.get_model();
+        let preamble = r#"
+            Role:
+            You are the Limes Intelligence Layer, a sophisticated AI orchestrator integrated into a secure WebAssembly (Wasm) FaaS runtime. Your primary objective is to assist users by intelligently utilizing the custom-loaded lambda functions they
+            have registered as tools.
+
+            Core Capabilities:
+            1. Tool Discovery: You have access to a dynamic library of user-defined functions. Each function is provided with a name, description, and input schema.
+            2. Strategic Execution: When a user issues a request, you must decompose the problem and determine which specific tool(s) are required to fulfill the task.
+            3. Context Synthesis: You must execute tools, analyze their outputs, and synthesize a final response that is factual, concise, and directly addresses the user's intent.
+
+            Operating Protocols:
+            - Tool-First Approach: If a task can be solved by an available tool, you must use the tool rather than relying on your internal knowledge. This ensures precision within the user's specific logic.
+            - Parametric Integrity: Carefully format the input for each tool call based on the provided JSON descriptions. Ensure all required arguments are present.
+            - Handling Failures: If a tool returns an error (e.g., execution timeout or trap), report the failure clearly to the user and suggest an alternative approach or correction if possible.
+            - Chain of Thought: Before calling a tool, briefly state your reasoning for choosing that specific function to maintain transparency.
+
+            Constraints:
+            - You only have access to the functions explicitly loaded by the current user.
+            - Do not hallucinate capabilities or function parameters that are not defined in the tool manifest.
+            - Maintain strict data privacy; use the data provided in the tool output only to satisfy the current request.
+
+            Objective:
+            Transform the user's high-level intent into a successful sequence of function executions, providing a seamless bridge between natural language and the Limes execution environment.
+        "#.to_string();
+
         let compl_url = format!("{}/api/chat", url);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
@@ -154,7 +184,7 @@ impl LimesAgent {
         })
     }
 
-    pub fn add_tool(&mut self, tool: Box<dyn LimesTool>) -> anyhow::Result<()> {
+    pub fn add_tool(&mut self, tool: Box<dyn LimesTool + Send + Sync>) -> anyhow::Result<()> {
         let def = tool.get_definition().map_err(|e| {
             anyhow::anyhow!(
                 "Failed to parse tool definition for '{}': {}",
@@ -168,7 +198,7 @@ impl LimesAgent {
         Ok(())
     }
 
-    pub async fn invoke_agent(&mut self, prompt: &str) -> anyhow::Result<String> {
+    pub async fn request(&mut self, prompt: &str) -> anyhow::Result<String> {
         self.messages.push(Message::User {
             content: prompt.to_string(),
         });
@@ -217,7 +247,7 @@ impl LimesAgent {
 
                     let result =
                         if let Some(tool) = self.tools.iter().find(|t| t.name() == *tool_name) {
-                            match tool.execute(&arguments) {
+                            match tool.execute(&arguments).await {
                                 Ok(res) => res,
                                 Err(e) => format!("Error executing tool: {}", e),
                             }

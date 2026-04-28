@@ -3,7 +3,12 @@ use std::sync::{
     Arc,
 };
 
-use crate::agents::LimesAgent;
+use async_trait::async_trait;
+
+use crate::{
+    agents::{LimesAgent, LimesTool},
+    runtime::Runtime,
+};
 use log::*;
 use thiserror::Error;
 use wasmtime::{
@@ -37,29 +42,28 @@ pub struct FunctionHandler {
     pub user_id: String,
     pub function_id: String,
     pub function_name: String,
-    pub function_input_description: String,
-    pub description: String,
+    pub function_description: String,
+    pub function_input_json: Option<String>,
 }
 
 impl FunctionHandler {
     pub async fn new(
         component: Arc<Component>,
-        memory_size: usize,
-        function_name: String,
-        function_input_description: String,
-        description: String,
         user_id: String,
         function_id: String,
+        function_name: String,
+        function_description: String,
+        function_input_json: Option<String>,
     ) -> anyhow::Result<Self> {
-        let lambda = Lambda::new(component, memory_size, user_id.clone()).await?;
+        let lambda = Lambda::new(component, &user_id).await?;
         Ok(Self {
             lambda,
             status: FunctionStatus::Ready,
-            function_name,
-            function_input_description,
-            description,
             user_id,
             function_id,
+            function_name,
+            function_description,
+            function_input_json,
         })
     }
 }
@@ -93,6 +97,39 @@ impl WasiView for LambdaState {
     }
 }
 
+#[derive(Debug)]
+pub struct DynamicTool {
+    pub func_handl: Arc<FunctionHandler>,
+}
+
+impl DynamicTool {
+    pub fn new(func_handl: Arc<FunctionHandler>) -> Self {
+        Self { func_handl }
+    }
+}
+
+#[async_trait]
+impl LimesTool for DynamicTool {
+    fn name(&self) -> String {
+        self.func_handl.function_name.clone()
+    }
+
+    fn description(&self) -> String {
+        self.func_handl.function_description.clone()
+    }
+
+    fn parameters_json(&self) -> String {
+        self.func_handl
+            .function_input_json
+            .clone()
+            .unwrap_or_else(|| "{}".to_string())
+    }
+
+    async fn execute(&self, arguments: &str) -> anyhow::Result<String> {
+        self.func_handl.lambda.run(arguments).await
+    }
+}
+
 // WIT implementation, it actually generates the Traits usable by the Guest machine
 impl ExecutorImports for LambdaState {
     async fn invoke_agent(&mut self, input: String) -> String {
@@ -103,13 +140,7 @@ impl ExecutorImports for LambdaState {
             self.user_id
         );
 
-        let agent = match LimesAgent::new_agent(
-            "http://127.0.0.1:11434",
-            "llama3.2:3b",
-            self.user_id.clone(),
-        )
-        .await
-        {
+        let mut agent = match LimesAgent::new().await {
             Ok(agent) => agent,
             Err(e) => {
                 error!("Failed to initialize LimesAgent: {e}");
@@ -117,47 +148,41 @@ impl ExecutorImports for LambdaState {
             }
         };
 
-        match agent.invoke_agent(input).await {
-            Ok(answer) => {
-                debug!("Agent responded successfully");
-                answer
-            }
-            Err(e) => {
-                error!("Agent invocation failed: {e}");
-                format!("AgentError: agent invocation failed - {e}")
+        // Add tools
+        let rt = Runtime::get_runtime_ref().unwrap();
+        let user_funcs = rt
+            .get_user_functions(&self.user_id)
+            .await
+            .unwrap_or_else(|_| vec![]);
+
+        // Build Tools
+        for func in user_funcs {
+            let tool = Box::new(DynamicTool::new(func.clone()));
+            if let Err(e) = agent.add_tool(tool) {
+                info!("Failed to register the tool: {e}");
             }
         }
+
+        agent
+            .request(&input)
+            .await
+            .unwrap_or_else(|e| format!("Error: {e}"))
     }
 }
 
 pub struct Lambda {
     component: Arc<Component>,
-    memory_size: usize,
     stop: Arc<AtomicBool>,
     user_id: String,
 }
 
 impl Lambda {
-    const MIN_MEMORY_BYTES: usize = 1024 * 1024 * 2; // 2 MiB
-
-    pub async fn new(
-        component: Arc<Component>,
-        memory_size: usize,
-        user_id: String,
-    ) -> anyhow::Result<Self> {
-        if memory_size < Self::MIN_MEMORY_BYTES {
-            return Err(anyhow::anyhow!(
-                "Lambda: requested memory {} bytes is below the minimum {} bytes",
-                memory_size,
-                Self::MIN_MEMORY_BYTES
-            ));
-        }
+    pub async fn new(component: Arc<Component>, user_id: &str) -> anyhow::Result<Self> {
         info!("Lambda created");
         Ok(Self {
             component,
-            memory_size,
             stop: Arc::new(AtomicBool::new(false)),
-            user_id,
+            user_id: user_id.into(),
         })
     }
 
@@ -207,9 +232,7 @@ impl Lambda {
     }
 
     fn build_store(&self) -> Store<LambdaState> {
-        let limiter = StoreLimitsBuilder::new()
-            .memory_size(self.memory_size)
-            .build();
+        let limiter = StoreLimitsBuilder::new().build();
 
         let state = LambdaState {
             wasi_ctx: WasiCtxBuilder::new().inherit_network().build(),
@@ -241,7 +264,6 @@ impl Lambda {
 impl std::fmt::Debug for Lambda {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Lambda")
-            .field("memory_size", &self.memory_size)
             .field("user_id", &self.user_id)
             .finish()
     }
@@ -259,7 +281,7 @@ mod tests {
         "/resources/lamda_tests/wasm_compiled"
     );
 
-    // ── Helpers ────────────────────────────────────────────────────────────
+    // ── Helpers ──
 
     fn make_engine() -> Engine {
         let mut cfg = Config::new();
@@ -273,22 +295,20 @@ mod tests {
         Component::from_file(engine, path).expect("Wasm component not found")
     }
 
-    async fn make_lambda(engine: &Engine, wasm_file: &str, memory: usize) -> Lambda {
+    async fn make_lambda(engine: &Engine, wasm_file: &str) -> Lambda {
         let path = PathBuf::from(format!("{WASM_DIR}/{wasm_file}"));
         let component = Arc::new(load_component(engine, &path));
-        Lambda::new(component, memory, String::new())
+        Lambda::new(component, "")
             .await
             .expect("Lambda::new failed")
     }
 
-    const MEM_2MIB: usize = 1024 * 1024 * 2;
-
-    // ── Tests ──────────────────────────────────────────────────────────────
+    // ── Tests ──
 
     #[tokio::test]
     async fn exec_single_lambda_function() {
         let engine = make_engine();
-        let lambda = make_lambda(&engine, "exec_rust_lambda_function.wasm", MEM_2MIB).await;
+        let lambda = make_lambda(&engine, "exec_rust_lambda_function.wasm").await;
         let result = lambda.run("HELLO WORLD").await.unwrap();
         assert_eq!("HELLO WORLD### TEST ###", result);
     }
@@ -296,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn stop_infinite_loop_function() {
         let engine = make_engine();
-        let lambda = Arc::new(make_lambda(&engine, "stop_infinite_loop.wasm", MEM_2MIB).await);
+        let lambda = Arc::new(make_lambda(&engine, "stop_infinite_loop.wasm").await);
 
         let run_handle = {
             let l = lambda.clone();
@@ -317,20 +337,20 @@ mod tests {
     #[tokio::test]
     async fn multiple_function_execution() {
         let engine = make_engine();
-        let lambda = Arc::new(make_lambda(&engine, "sorter.wasm", MEM_2MIB).await);
+        let lambda = Arc::new(make_lambda(&engine, "sorter.wasm").await);
 
         let (r1, r2) = tokio::join!(
             {
                 let l = lambda.clone();
-                tokio::spawn(async move { l.run("f,e,d,c,b,a").await })
+                tokio::spawn(async move { l.run(r#"{"items": "f,e,d,c,b,a"}"#).await })
             },
             {
                 let l = lambda.clone();
-                tokio::spawn(async move { l.run("e,d,c,b,a").await })
+                tokio::spawn(async move { l.run(r#"{"items": "e,d,c,b,a"}"#).await })
             }
         );
 
-        assert_eq!("[a,b,c,d,e,f]", r1.unwrap().unwrap());
-        assert_eq!("[a,b,c,d,e]", r2.unwrap().unwrap());
+        assert_eq!(r#"{"content": "[a,b,c,d,e,f]"}"#, r1.unwrap().unwrap());
+        assert_eq!(r#"{"content": "[a,b,c,d,e]"}"#, r2.unwrap().unwrap());
     }
 }
