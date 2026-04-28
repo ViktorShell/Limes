@@ -9,8 +9,13 @@ A runtime for WebAssembly lambda function's with support for LLM's interaction.
 
 ## How to use the server
 
-Download the project folder and move inside the `limes-runtime` directory.
-Build the project using `cargo build --release` to obtain the executable server.
+Download the project folder and move inside the _limes-runtime_ directory.
+Build the project using:
+
+```bash
+cargo build --release
+```
+
 Run the server using the follow example:
 
 ```bash
