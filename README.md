@@ -1,6 +1,6 @@
 # Limes
 
-![Limes](./pics/PNG/Logo_Limes.png)
+![Limes](./pics/limes.svg)
 
 A runtime for WebAssembly lambda function's with support for LLM's interaction.
 
